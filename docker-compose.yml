@@ -1,0 +1,68 @@
+version: "3.9"
+
+services:
+  mongo:
+    image: mongo:6
+    container_name: cc_vendor_mongo
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: cc_vendor_redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: cc_vendor_api
+    restart: unless-stopped
+    depends_on:
+      mongo:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: 5000
+      MONGODB_URI: mongodb://mongo:27017/couture-candy-vendor
+      REDIS_URL: redis://redis:6379
+      LOG_LEVEL: info
+      API_RATE_LIMIT_WINDOW_MS: 900000
+      API_RATE_LIMIT_MAX_REQUESTS: 100
+      SYNC_RATE_LIMIT_WINDOW_MS: 60000
+      SYNC_RATE_LIMIT_MAX_REQUESTS: 5
+      QUEUE_CONCURRENCY: 5
+      QUEUE_MAX_RETRIES: 3
+      QUEUE_RETRY_DELAY: 5000
+      SOCKET_CORS_ORIGIN: http://localhost:3000
+      SHOPIFY_API_VERSION: 2024-01
+      JWT_SECRET: cc-vendor-jwt-secret-2024-very-secure-key
+      JWT_EXPIRES_IN: 24h
+      QUEUE_DRIVER: redis
+      NOXA_API_URL: http://api.noxanabel.com/API
+      NOXA_AUTH_KEY: ${NOXA_AUTH_KEY:-}
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./backend/logs:/usr/src/app/logs
+
+volumes:
+  mongo_data:

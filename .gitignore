@@ -1,0 +1,63 @@
+# Node
+node_modules/
+**/node_modules/
+.npm/
+.pnpm-store/
+package-lock.json
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Logs
+logs/
+*.log
+*.log.*
+
+# Build output
+build/
+dist/
+.tmp/
+.temp/
+.cache/
+coverage/
+*.tsbuildinfo
+
+# Env & secrets
+.env
+.env.*
+**/.env
+**/.env.*
+!.env.example
+
+# OS & Editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Mongo/DB dumps
+*.dump
+*.bak
+
+# Runtime data
+pids/
+*.pid
+*.seed
+*.pid.lock
+
+# Misc
+.eslintcache
+.stylelintcache
+.husky/_/
+.sass-cache/
+
+# Project specific
+backend/.env
+backend/.env.*
+backend/storage/
+backend/.cache/
+frontend/.env
+frontend/.env.*
