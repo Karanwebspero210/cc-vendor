@@ -19,7 +19,7 @@ router.use(readOnlyLimiter);
 router.get('/all', validate.inventoryList, inventoryController.getAllProductsVariantsInventory);
 
 /**
- * @route GET /api/inventory/products/:productId/variants
+ * @route GET /api/inventory/:productId/
  * @desc Alias route to list variants by productId param
  * @access Private
  */
