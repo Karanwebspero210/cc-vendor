@@ -53,6 +53,16 @@ const productVariantSchema = new mongoose.Schema({
     default: null,
     index: true
   },
+  // Extra Shopify metadata for better identification
+  shopifyProductId: {
+    type: String,
+    default: null,
+    index: true
+  },
+  shopifyVariantTitle: {
+    type: String,
+    default: null
+  },
   lastKnownShopifyQty: {
     type: Number,
     default: null
@@ -105,7 +115,10 @@ productVariantSchema.index({ mainSku: 1, color: 1, size: 1  }, { unique: true })
  * @returns {string} - Generated variant SKU
  */
 productVariantSchema.statics.generateVariantSku = function(mainSku, color, size) {
-  return `noxa_${mainSku}-${(color || '').replace(/\s+/g, '')}-${(size || '').replace(/\s+/g, '')}`.toUpperCase();
+  const m = (mainSku || '').toString().trim();
+  const c = (color || '').toString();
+  const s = (size || '').toString();
+  return `noxa_${m}-${c}-${s}`;
 };
 
 /**
@@ -123,9 +136,9 @@ productVariantSchema.statics.findOrCreate = async function(params) {
     variant = new this({
       ...params,
       variantSku,
-      mainSku: mainSku.toUpperCase(),
-      color: (color || '').toString().trim(),
-      size: (size || '').toString().trim()
+      mainSku: (mainSku || '').toString().trim(),
+      color: (color || '').toString(),
+      size: (size || '').toString()
     });
     await variant.save();
   }

@@ -128,6 +128,7 @@ const schemas = {
   // Auth validation
   auth: {
     login: Joi.object({
+      email: Joi.string().email().required().trim().lowercase(),
       password: Joi.string().required().min(1)
     }),
     changePassword: Joi.object({
@@ -141,6 +142,17 @@ const schemas = {
     pagination: Joi.object({
       page: Joi.number().integer().min(1).default(1),
       limit: Joi.number().integer().min(1).max(100).default(50)
+    }),
+    // Inventory list filters
+    inventoryList: Joi.object({
+      page: Joi.number().integer().min(1).default(1),
+      limit: Joi.number().integer().min(1).max(200).default(50),
+      status: Joi.string().optional(), // CSV supported in controller
+      sku: Joi.string().optional().max(200),
+      variantSku: Joi.string().optional().max(200),
+      search: Joi.string().optional().max(200),
+      stockQtyMin: Joi.number().optional(),
+      stockQtyMax: Joi.number().optional()
     }),
     search: Joi.object({
       query: Joi.string().optional().max(100),
@@ -279,6 +291,9 @@ const validate = {
   
   // Pagination validation
   pagination: validateQuery(schemas.query.pagination),
+  
+  // Inventory list query validation
+  inventoryList: validateQuery(schemas.query.inventoryList),
   
   // Search validation
   search: validateQuery(schemas.query.search),

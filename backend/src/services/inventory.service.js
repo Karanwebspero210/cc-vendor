@@ -12,149 +12,227 @@ const noxaService = require('./noxa.service');
 class InventoryService {
   /**
    * Sync Shopify inventory for a store using ProductVariant as source of truth.
-   * Options: { selectedSkus?: string[], onlyInStock?: boolean, maxUpdates?: number, updateOutOfStock?: boolean }
+   * Options: { selectedSkus?: string[], onlyInStock?: boolean, maxUpdates?: number, updateOutOfStock?: boolean, onlyMissingShopifyFields?: boolean }
    */
   async syncStoreFromProductVariants(storeId, options = {}) {
     const {
       selectedSkus = [],
       onlyInStock = false,
       maxUpdates = 0,
-      updateOutOfStock = true
+      updateOutOfStock = true,
+      onlyMissingShopifyFields = false,
+      onProgress = null,
+      batchSize: optBatchSize,
+      batchDelayMs: optBatchDelayMs
     } = options;
 
     const store = await Store.findById(storeId);
     if (!store) throw new Error('Store not found');
 
-    // Resolve and cache primary location
-    const locationId = await shopifyService.getPrimaryLocationId(storeId);
+    // Helper: in-place Fisher-Yates shuffle
+    const shuffle = (arr) => {
+      for (let i = arr.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [arr[i], arr[j]] = [arr[j], arr[i]];
+      }
+      return arr;
+    };
 
     // Load variants to sync
     const query = {};
+    // If requested, limit to variants that are missing Shopify identifiers (variantId or inventoryItemId)
+    if (onlyMissingShopifyFields) {
+      query.$or = [
+        { shopifyVariantId: { $in: [null, ''] } },
+        { shopifyInventoryItemId: { $in: [null, ''] } }
+      ];
+    }
     if (selectedSkus.length > 0) {
-      query.variantSku = { $in: selectedSkus.map(s => s.toUpperCase()) };
+      query.variantSku = { $in: selectedSkus.map(s => s && s.toString().trim()).filter(Boolean) };
     }
-    if (onlyInStock) {
-      query.stockQty = { $gt: 0 };
+    // Stock filtering is disabled for now: ignore onlyInStock
+
+    // Always stream in batches to avoid OOM and remove any artificial syncing limits
+    {
+      const batchSize = Number(optBatchSize || process.env.INVENTORY_BATCH_SIZE || 1000);
+      const batchDelayMs = Number(optBatchDelayMs || process.env.INVENTORY_BATCH_DELAY_MS || 300);
+      let lastId = null;
+      let total = 0;
+      let countToUpdate = 0;
+      let skipped = 0;
+      // Pre-compute total matching documents for progress visibility
+      const totalToScan = await ProductVariant.countDocuments(query);
+
+      while (true) {
+        const batchQuery = { ...query };
+        if (lastId) {
+          batchQuery._id = { $gt: lastId };
+        }
+        const batch = await ProductVariant.find(batchQuery)
+          .sort({ _id: 1 })
+          .limit(batchSize)
+          .lean(false); // want mongoose docs for saving
+
+        if (!batch || batch.length === 0) break;
+
+        // Resolve missing Shopify fields for this batch
+        let needsShopifyLookup = batch.filter(v => !v.shopifyVariantId || !v.shopifyInventoryItemId || v.lastKnownShopifyQty == null);
+        // Randomize order for lookup
+        if (needsShopifyLookup.length > 1) shuffle(needsShopifyLookup);
+
+
+        if (needsShopifyLookup.length > 0) {
+          await this.resolveMissingShopifyFields(storeId, needsShopifyLookup);
+        }
+
+        // Count updatable ones for this batch
+        let toUpdateBatch = batch.filter(pv => pv.shopifyVariantId && pv.shopifyInventoryItemId);
+        if (!updateOutOfStock) {
+          toUpdateBatch = toUpdateBatch.filter(pv => Number(pv.stockQty || 0) !== 0);
+        }
+
+        total += batch.length;
+        countToUpdate += toUpdateBatch.length;
+        skipped += Math.max(0, batch.length - toUpdateBatch.length);
+
+        lastId = batch[batch.length - 1]._id;
+
+        // Real-time progress callback and logs
+        if (typeof onProgress === 'function') {
+          try {
+            await onProgress({ processed: total, resolved: countToUpdate, skipped, total: totalToScan });
+          } catch (cbErr) {
+            logger.warn(`onProgress callback failed: ${cbErr.message}`);
+          }
+        }
+
+        // brief pause between batches to avoid hitting hard limits
+        await new Promise(res => setTimeout(res, batchDelayMs));
+      }
+
+      return {
+        total,
+        countToUpdate,
+        skipped,
+        toUpdate: [] // intentionally empty to avoid huge payloads in large runs
+      };
     }
+  }
+  
+  /**
+   * Helper: Resolve and update missing Shopify fields (shopifyVariantId, shopifyInventoryItemId, lastKnownShopifyQty)
+   * for the provided ProductVariant mongoose docs by fetching productVariants by SKUs in batches.
+   */
+  async resolveMissingShopifyFields(storeId, variantDocs = []) {
+    try {
+      const lookupSkus = [...new Set(
+        (variantDocs || [])
+          .map(v => String(v.variantSku || '').trim())
+          .filter(Boolean)
+      )];
+      if (lookupSkus.length === 0) return;
+      // Small helper to throttle between batches
+      const sleep = (ms) => new Promise(res => setTimeout(res, ms));
 
-    const variants = await ProductVariant.find(query).lean(false); // want mongoose docs for saving
+      // Process SKUs in batches to avoid giant maps and respect Shopify rate limits
+      const skuBatchSize = 500; // each batch will be further chunked inside shopifyService
+      for (let i = 0; i < lookupSkus.length; i += skuBatchSize) {
+        const batchSkus = lookupSkus.slice(i, i + skuBatchSize);
 
-    // Build Shopify SKU map by paging products
-    const skuMap = new Map(); // key: lowercased SKU, value: { variantId, inventoryItemId }
-    let hasNext = true;
-    let cursor = undefined;
-    while (hasNext) {
-      const products = await shopifyService.getProducts(storeId, { limit: 50, cursor });
-      for (const edge of products.edges || []) {
-        const productNode = edge.node;
-        for (const vEdge of (productNode.variants?.edges || [])) {
-          const v = vEdge.node;
-          if (v.sku) {
-            const key = String(v.sku).toLowerCase();
-            skuMap.set(key, {
-              variantId: v.id,
-              inventoryItemId: v.inventoryItem?.id
+        const skuInfoMap = await shopifyService.getProductVariantsBySkus(storeId, batchSkus);
+
+        // Apply updates for only the documents in this batch
+        const batchSkuSet = new Set(batchSkus.map(s => String(s).toLowerCase()));
+        const docsInBatch = variantDocs.filter(v => batchSkuSet.has(String(v.variantSku || '').toLowerCase()));
+
+        for (const pv of docsInBatch) {
+          const key = String(pv.variantSku || '').toLowerCase();
+          const info = skuInfoMap.get(key);
+          let changed = false;
+          if (info) {
+            if (!pv.shopifyVariantId && info.variantId) {
+              pv.shopifyVariantId = info.variantId;
+              changed = true;
+            }
+            // Store extra Shopify identifiers/labels for better mapping
+            if (!pv.shopifyProductId && info.raw?.product?.id) {
+              pv.shopifyProductId = info.raw.product.id;
+              changed = true;
+            }
+            if (!pv.shopifyVariantTitle && info.raw?.title) {
+              pv.shopifyVariantTitle = info.raw.title;
+              changed = true;
+            }
+            // Try to set inventoryItemId; if missing, fallback by variantId
+            if (!pv.shopifyInventoryItemId) {
+              if (info.inventoryItemId) {
+                pv.shopifyInventoryItemId = info.inventoryItemId;
+                changed = true;
+              } else if (info.variantId) {
+                try {
+                  const fallback = await shopifyService.getInventoryItemForVariant(storeId, info.variantId);
+                  if (fallback?.inventoryItemId) {
+                    pv.shopifyInventoryItemId = fallback.inventoryItemId;
+                    changed = true;
+                  }
+                  if (pv.lastKnownShopifyQty == null && typeof fallback?.inventoryQuantity === 'number') {
+                    pv.lastKnownShopifyQty = fallback.inventoryQuantity;
+                    changed = true;
+                  }
+                } catch (fallbackErr) {
+                  logger.warn(`Fallback inventory lookup failed for SKU ${pv.variantSku}: ${fallbackErr.message}`);
+                }
+              }
+            }
+            if (pv.lastKnownShopifyQty == null && typeof info.inventoryQuantity === 'number') {
+              pv.lastKnownShopifyQty = info.inventoryQuantity;
+              changed = true;
+            }
+          } else {
+            logger.debug(`No Shopify match found for SKU '${pv.variantSku}' during field resolution`);
+          }
+          // If still missing required fields after lookup, mark as failed
+          const missingRequired = (!pv.shopifyVariantId || !pv.shopifyInventoryItemId);
+          if (missingRequired) {
+            pv.lastSyncStatus = 'failed';
+            pv.lastSyncError = 'MISSING_SHOPIFY_FIELDS';
+            pv.lastSyncAt = new Date();
+            changed = true;
+            logger.warn(`[resolveMissingShopifyFields][missing]`, {
+              sku: pv.variantSku,
+              shopifyVariantId: pv.shopifyVariantId,
+              shopifyInventoryItemId: pv.shopifyInventoryItemId
+            });
+          } else {
+            // Fields resolved: ensure a valid enum value is set to pass validation
+            if (pv.lastSyncStatus !== 'success') {
+              pv.lastSyncStatus = 'success';
+              pv.lastSyncError = null;
+              pv.lastSyncAt = new Date();
+              changed = true;
+            }
+          }
+          if (changed) {
+            await pv.save();
+            logger.info(`[resolveMissingShopifyFields][updated]`, {
+              sku: pv.variantSku,
+              shopifyVariantId: pv.shopifyVariantId,
+              shopifyInventoryItemId: pv.shopifyInventoryItemId,
+              shopifyProductId: pv.shopifyProductId,
+              shopifyVariantTitle: pv.shopifyVariantTitle,
+              lastKnownShopifyQty: pv.lastKnownShopifyQty,
+              status: pv.lastSyncStatus
             });
           }
         }
+
+        // brief pause between batches to avoid hitting hard limits
+        await sleep(300);
       }
-      hasNext = products.pageInfo?.hasNextPage;
-      if (hasNext) {
-        const last = products.edges[products.edges.length - 1];
-        cursor = last?.cursor;
-      }
+    } catch (err) {
+      logger.error('resolveMissingShopifyFields failed:', err);
+      throw err;
     }
-
-    // Resolve/cache IDs and prepare list to update
-    const toUpdate = [];
-    for (const pv of variants) {
-      // Ensure Shopify IDs cached
-      if (!pv.shopifyVariantId || !pv.shopifyInventoryItemId) {
-        const match = skuMap.get(String(pv.variantSku).toLowerCase());
-        if (match && match.variantId && match.inventoryItemId) {
-          pv.shopifyVariantId = match.variantId;
-          pv.shopifyInventoryItemId = match.inventoryItemId;
-          await pv.save();
-        } else {
-          pv.lastSyncStatus = 'failed';
-          pv.lastSyncError = 'UNMATCHED_SKU';
-          pv.lastSyncAt = new Date();
-          await pv.save();
-          continue;
-        }
-      }
-
-      // Filter out zero stock if not updating out of stock
-      const targetQty = Number(pv.stockQty || 0);
-      if (!updateOutOfStock && targetQty === 0) {
-        continue;
-      }
-
-      toUpdate.push(pv);
-      if (maxUpdates > 0 && toUpdate.length >= maxUpdates) break;
-    }
-
-    if (toUpdate.length === 0) {
-      return { updated: 0, total: variants.length, skipped: variants.length };
-    }
-
-    // Fetch current inventory levels for all items
-    const inventoryItemIds = toUpdate.map(pv => pv.shopifyInventoryItemId);
-    const levels = await shopifyService.getInventoryLevels(storeId, inventoryItemIds);
-    const currentMap = new Map(); // inventoryItemId -> available at our location
-    for (const item of levels || []) {
-      const invItemId = item.id;
-      let availableAtLoc = 0;
-      for (const lvlEdge of (item.inventoryLevels?.edges || [])) {
-        const lvl = lvlEdge.node;
-        if (lvl.location?.id === locationId) {
-          availableAtLoc = Number(lvl.available || 0);
-          break;
-        }
-      }
-      currentMap.set(invItemId, availableAtLoc);
-    }
-
-    // Perform updates sequentially to be safe with rate limits
-    let updated = 0, failed = 0, skipped = 0;
-    const itemLogs = [];
-    for (const pv of toUpdate) {
-      const invItemId = pv.shopifyInventoryItemId;
-      const fromQty = currentMap.get(invItemId) ?? 0;
-      const toQty = Number(pv.stockQty || 0);
-      const delta = toQty - fromQty;
-
-      if (delta === 0) {
-        skipped++;
-        continue;
-      }
-      try {
-        await shopifyService.updateInventory(storeId, invItemId, delta, locationId);
-        pv.lastKnownShopifyQty = toQty;
-        pv.lastSyncAt = new Date();
-        pv.lastSyncStatus = 'success';
-        pv.lastSyncError = null;
-        await pv.save();
-        updated++;
-        itemLogs.push({ sku: pv.variantSku, inventoryItemId: invItemId, fromQty, toQty, delta, status: 'success' });
-      } catch (err) {
-        failed++;
-        pv.lastSyncAt = new Date();
-        pv.lastSyncStatus = 'failed';
-        pv.lastSyncError = err?.message || 'UPDATE_FAILED';
-        await pv.save();
-        logger.error(`Inventory update failed for SKU ${pv.variantSku}:`, err);
-        itemLogs.push({ sku: pv.variantSku, inventoryItemId: invItemId, fromQty, toQty, delta, status: 'failed', error: err?.message });
-      }
-    }
-
-    return {
-      total: toUpdate.length,
-      updated,
-      failed,
-      skipped,
-      logs: itemLogs
-    };
   }
   /**
    * Get comprehensive inventory overview

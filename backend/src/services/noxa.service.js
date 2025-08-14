@@ -124,8 +124,8 @@ class NoxaService {
         logger.error(`Failed to process variants for SKU ${sku}:`, error.message);
       }
       
-      // Get the updated variants from the database
-      const variants = await ProductVariant.find({ mainSku: SKU.toUpperCase() })
+      // Get the updated variants from the database (preserve original case)
+      const variants = await ProductVariant.find({ mainSku: SKU })
         .select('variantSku color size stockQty preOrderDate status')
         .lean();
       
@@ -185,23 +185,23 @@ class NoxaService {
         if (Array.isArray(variantsData)) {
           variants = variantsData;
         } else if (typeof variantsData === 'string') {
-          const mainSku = variantsData.toUpperCase();
+          const mainSku = variantsData
           variants = (inventories || []).map(inv => ({
             mainSku,
-            color: (inv.Color || '').toString().trim(),
-            size: (inv.Size || '').toString().trim(),
+            color: inv.Color,
+            size: inv.Size,
             stockQty: Number(inv.StockQty) || 0,
             preOrderDate: inv.PreOrderDate || null,
             status: (Number(inv.StockQty) || 0) > 0 ? 'Active' : 'Inactive'
           }));
         } else if (variantsData && typeof variantsData === 'object' && variantsData.mainSku && Array.isArray(variantsData.inventories)) {
-          const mainSku = (variantsData.mainSku || '').toString().trim().toUpperCase();
+          const mainSku = (variantsData.mainSku || '').toString().trim();
           variants = (variantsData.inventories || []).map(inv => ({
             mainSku,
-            color: (inv.Color || '').toString().trim(),
-            size: (inv.Size || '').toString().trim(),
+            color: inv.Color,
+            size: inv.Size,
             stockQty: Number(inv.StockQty) || 0,
-            preOrderDate: inv.PreOrderDate || null,
+            preOrderDate: inv.PreOrderDate,
             status: (Number(inv.StockQty) || 0) > 0 ? 'Active' : 'Inactive'
           }));
         } else {
@@ -212,18 +212,15 @@ class NoxaService {
           return { acknowledged: true, insertedCount: 0, matchedCount: 0, modifiedCount: 0, upsertedCount: 0 };
         }
 
-        // Ensure mainSku normalization and compute variantSku via model util to keep consistency
-        const normalize = (s) => (s || '').toString().trim();
-        const upper = (s) => (s || '').toString().trim().toUpperCase();
 
         const prepared = variants.map(v => {
-          const mainSku = upper(v.mainSku);
-          const color = normalize(v.color);
-          const size = normalize(v.size);
+          const mainSku = v.mainSku;
+          const color = v.color;
+          const size = v.size;
           // Use ProductVariant helper if available to generate consistent SKU
           const variantSku = ProductVariant.generateVariantSku
             ? ProductVariant.generateVariantSku(mainSku, color, size)
-            : `noxa_${mainSku}-${color.replace(/\s+/g, '')}-${size.replace(/\s+/g, '')}`.toUpperCase();
+            : `noxa_${mainSku}-${color.replace(/\s+/g, '')}-${size.replace(/\s+/g, '')}`;
           return {
             ...v,
             mainSku,
@@ -240,7 +237,7 @@ class NoxaService {
         let idByMainSku = productIdByMainSku instanceof Map ? productIdByMainSku : new Map();
         const missingMainSkus = [];
         const ensureIdForMainSku = (ms) => {
-          const key = upper(ms);
+          const key = ms;
           if (idByMainSku.has(key)) return;
           missingMainSkus.push(key);
         };
@@ -250,12 +247,12 @@ class NoxaService {
           // Fetch products by mainSku (aligns with Product schema)
           const products = await Product.find({ mainSku: { $in: missingMainSkus } }, { _id: 1, mainSku: 1 }).lean();
           for (const p of products) {
-            idByMainSku.set(upper(p.mainSku), p._id);
+            idByMainSku.set(p.mainSku, p._id);
           }
         }
 
         // If some still missing, create minimal vendor products so variant can link
-        const stillMissing = Array.from(new Set(prepared.map(p => p.mainSku))).filter(ms => !idByMainSku.has(upper(ms)));
+        const stillMissing = Array.from(new Set(prepared.map(p => p.mainSku))).filter(ms => !idByMainSku.has(ms));
         if (stillMissing.length) {
           const now = new Date();
           const productUpserts = stillMissing.map(ms => ({
@@ -280,13 +277,13 @@ class NoxaService {
           // Re-fetch to get IDs
           const products2 = await Product.find({ mainSku: { $in: stillMissing } }, { _id: 1, mainSku: 1 }).lean();
           for (const p of products2) {
-            idByMainSku.set(upper(p.mainSku), p._id);
+            idByMainSku.set(  p.mainSku, p._id);
           }
         }
 
-        // Build variant bulk ops
+        // Build variant bulk ops 
         const bulkOps = prepared.map(v => {
-          const productId = idByMainSku.get(upper(v.mainSku));
+          const productId = idByMainSku.get(v.mainSku);
           if (!productId) {
             // Skip if we still couldn't resolve product
             return null;
@@ -346,7 +343,7 @@ class NoxaService {
       const payloadSkus = Array.from(new Set(
         skus
           .filter(Boolean)
-          .map(s => s.toString().trim().toUpperCase())
+          .map(s => s.toString().trim())
       ));
 
       logger.debug(`Noxa batch payload: ${payloadSkus.length} SKUs`, { sample: payloadSkus.slice(0, 5) });
@@ -431,7 +428,7 @@ class NoxaService {
         // Build a map of mainSku -> product _id for linking
         const uniqueMainSkus = Array.from(new Set(allVariants.map(v => v.mainSku)));
         const products = await Product.find({ source: 'vendor', sourceId: { $in: uniqueMainSkus } }, { _id: 1, sourceId: 1 }).lean();
-        const productIdByMainSku = new Map(products.map(p => [p.sourceId.toUpperCase(), p._id]));
+        const productIdByMainSku = new Map(products.map(p => [p.sourceId, p._id]));
 
         // Now process variants in bulk with product references
         await this.processProductVariants(allVariants, [], productIdByMainSku);

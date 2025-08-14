@@ -9,6 +9,10 @@ const Product = require('../models/Product');
  * Supports: pagination, status filter, stock quantity range, SKU search
  */
 class InventoryController {
+  // Safely escape user-provided text for Mongo $regex
+  static escapeRegex(text) {
+    return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  }
   /**
    * List variants inventory across ALL products
    * Query params:
@@ -33,9 +37,20 @@ class InventoryController {
         if (statuses.length) filter.status = { $in: statuses };
       }
 
-      // SKU search (variantSku contains)
-      if (typeof req.query.sku === 'string' && req.query.sku.trim().length) {
-        filter.variantSku = { $regex: req.query.sku.trim(), $options: 'i' };
+      console.log(req.query.sku);
+
+      // SKU search (variantSku contains) - support aliases and escape regex
+      {
+        // Find any key matching sku aliases (case-insensitive)
+        const aliases = ['sku', 'variantSku', 'variant_sku', 'search'];
+        const key = Object.keys(req.query).find(k => aliases.includes(k.toString().toLowerCase()));
+        const rawSku = key && typeof req.query[key] === 'string' ? req.query[key] : '';
+        if (rawSku && rawSku.trim().length) {
+          const trimmed = rawSku.trim();
+          const pattern = InventoryController.escapeRegex(trimmed);
+          filter.variantSku = { $regex: pattern, $options: 'i' };
+          logger.debug('Applying SKU filter for inventory/all', { key, rawSku: trimmed, pattern });
+        }
       }
 
       // Stock quantity range (validated, clamped, normalized)
@@ -110,9 +125,17 @@ class InventoryController {
         if (statuses.length) filter.status = { $in: statuses };
       }
 
-      // SKU search (variantSku contains)
-      if (typeof req.query.sku === 'string' && req.query.sku.trim().length) {
-        filter.variantSku = { $regex: req.query.sku.trim(), $options: 'i' };
+      // SKU search (variantSku contains) - support aliases and escape regex
+      {
+        const rawSku =
+          (typeof req.query.sku === 'string' && req.query.sku) ||
+          (typeof req.query.variantSku === 'string' && req.query.variantSku) ||
+          (typeof req.query.search === 'string' && req.query.search) ||
+          '';
+        if (rawSku && rawSku.trim().length) {
+          const pattern = InventoryController.escapeRegex(rawSku.trim());
+          filter.variantSku = { $regex: pattern, $options: 'i' };
+        }
       }
 
       // Stock quantity range (validated, clamped, normalized)

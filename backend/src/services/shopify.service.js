@@ -13,6 +13,120 @@ class ShopifyService {
   }
 
   /**
+   * Fetch inventoryItemId and inventoryQuantity for a given variant ID (GID)
+   */
+  async getInventoryItemForVariant(storeId, variantId) {
+    try {
+      const store = await Store.findById(storeId);
+      if (!store) {
+        throw new Error('Store not found');
+      }
+
+      const accessToken = decrypt(store.accessToken);
+      const query = `
+        query variantInventory($id: ID!) {
+          productVariant(id: $id) {
+            id
+            inventoryQuantity
+            inventoryItem { id }
+          }
+        }
+      `;
+      const variables = { id: variantId };
+      const resp = await this.makeGraphQLRequest(store.shopifyDomain, accessToken, query, variables);
+      const v = resp.data?.data?.productVariant;
+      return {
+        inventoryItemId: v?.inventoryItem?.id || null,
+        inventoryQuantity: typeof v?.inventoryQuantity === 'number' ? v.inventoryQuantity : null
+      };
+    } catch (error) {
+      logger.error('Error fetching inventory item for variant:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get product variants by SKUs using GraphQL productVariants search
+   * Returns a map keyed by lowercased SKU -> { variantId, inventoryItemId, inventoryQuantity, raw }
+   */
+  async getProductVariantsBySkus(storeId, skus = []) {
+    try {
+      const store = await Store.findById(storeId);
+      if (!store) {
+        throw new Error('Store not found');
+      }
+
+      if (!Array.isArray(skus) || skus.length === 0) {
+        return new Map();
+      }
+
+      const accessToken = decrypt(store.accessToken);
+
+      const graphqlQuery = `
+        query productVariantsBySku($first: Int!, $query: String!, $after: String) {
+          productVariants(first: $first, query: $query, after: $after) {
+            edges {
+              cursor
+              node {
+                id
+                title
+                sku
+                inventoryQuantity
+                inventoryItem { id }
+                product { id title }
+              }
+            }
+            pageInfo { hasNextPage }
+          }
+        }
+      `;
+
+      // Shopify search length/complexity can be limited; chunk SKUs conservatively
+      const chunkSize = 25;
+      const outMap = new Map();
+      const sleep = (ms) => new Promise(res => setTimeout(res, ms));
+      const perChunkDelayMs = Number(process.env.SHOPIFY_GRAPHQL_CHUNK_DELAY_MS || 200); // throttle between chunk requests
+      // Helper to safely escape quotes/backslashes in SKUs for GraphQL search
+      const escapeSku = (s) => String(s).trim().replace(/\\/g, '\\\\').replace(/\"/g, '\\"');
+      for (let i = 0; i < skus.length; i += chunkSize) {
+        const chunk = skus.slice(i, i + chunkSize).filter(Boolean);
+        if (!chunk.length) continue;
+        // Quote SKUs to ensure exact-match search even when SKUs contain spaces/special characters
+        const orQuery = chunk.map(s => `sku:\"${escapeSku(s)}\"`).join(' OR ');
+        let after = null;
+        let page = 0;
+        do {
+          const variables = { first: 100, query: orQuery, after };
+          const resp = await this.makeGraphQLRequest(store.shopifyDomain, accessToken, graphqlQuery, variables);
+          const body = resp.data?.data?.productVariants;
+          const edges = body?.edges || [];
+          for (const edge of edges) {
+            const node = edge?.node;
+            if (!node?.sku) continue;
+            const key = String(node.sku).toLowerCase();
+            outMap.set(key, {
+              variantId: node.id,
+              inventoryItemId: node.inventoryItem?.id || null,
+              inventoryQuantity: typeof node.inventoryQuantity === 'number' ? node.inventoryQuantity : null,
+              raw: node
+            });
+          }
+          after = edges.length ? edges[edges.length - 1].cursor : null;
+          page++;
+          // small delay to avoid hammering Shopify
+          await sleep(perChunkDelayMs);
+          if (!body?.pageInfo?.hasNextPage) break;
+        } while (true);
+      }
+
+      return outMap;
+    } catch (error) {
+      logger.error('Error getting product variants by SKUs:', error);
+      throw error;
+    }
+  }
+
+  /**
    * Get primary location ID for a store and cache it in Store.settings.defaultLocationId
    */
   async getPrimaryLocationId(storeId) {
@@ -26,9 +140,6 @@ class ShopifyService {
 
     const accessToken = decrypt(store.accessToken);
 
-    console.log('Shopify access token:', accessToken);
-    console.log('Shopify domain:', store.shopifyDomain);  
-    console.log('Shopify API version:', this.apiVersion);
     const query = `
       query locations($first: Int!) {
         locations(first: $first) {
@@ -88,23 +199,7 @@ class ShopifyService {
         throw new Error('Invalid response format from Shopify API');
       }
 
-      const { shop } = response.data;
-
-      // Verify we have the necessary permissions by checking if we can access products
-      try {
-        await this.makeRequest(normalizedDomain, accessToken, 'products/count.json');
-      } catch (permissionError) {
-        if (permissionError.response?.status === 403) {
-          throw new Error('Insufficient permissions: The access token does not have required permissions');
-        }
-        // If it's not a permission error, continue with the shop info we have
-      }
-
-      // Get API call limit information
-      const rateLimit = {
-        limit: parseInt(response.headers['x-shopify-shop-api-call-limit']?.split('/')[1]) || 0,
-        remaining: parseInt(response.headers['x-shopify-shop-api-call-limit']?.split('/')[0]) || 0
-      };
+      const { shop } = response.data;     
 
       return {
         success: true,
@@ -120,7 +215,6 @@ class ShopifyService {
           timezone_offset_minutes: shop.timezone_offset_minutes,
           timezone_offset_minutes_clock: shop.timezone_offset_minutes_clock,
           timezone_abbr: shop.timezone_abbr,
-          api_rate_limit: rateLimit
         }
       };
 
@@ -466,8 +560,8 @@ class ShopifyService {
     }
 
     const url = `https://${normalizedDomain}/admin/api/${this.apiVersion}/graphql.json`;
-    
-    const config = {
+
+    const baseConfig = {
       method: 'POST',
       url,
       headers: {
@@ -480,10 +574,29 @@ class ShopifyService {
         query,
         variables: variables || {}
       },
-      timeout: 15000 // 15 second timeout for GraphQL queries
+      timeout: 20000 // 20 second timeout for GraphQL queries
     };
 
-    return await axios(config);
+    // basic retry with backoff for rate limiting / transient errors
+    const sleep = (ms) => new Promise(res => setTimeout(res, ms));
+    const maxRetries = 4;
+    let attempt = 0;
+    let lastErr;
+    while (attempt <= maxRetries) {
+      try {
+        return await axios(baseConfig);
+      } catch (err) {
+        lastErr = err;
+        const status = err?.response?.status;
+        const retryAfter = Number(err?.response?.headers?.['retry-after']) || null;
+        const shouldRetry = status === 429 || status === 430 || status === 500 || status === 502 || status === 503 || status === 504;
+        if (!shouldRetry || attempt === maxRetries) break;
+        const backoff = retryAfter ? retryAfter * 1000 : Math.min(2000 * Math.pow(2, attempt), 15000);
+        await sleep(backoff);
+        attempt++;
+      }
+    }
+    throw lastErr;
   }
 
   /**

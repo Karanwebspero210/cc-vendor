@@ -85,7 +85,7 @@ class ProductController {
           const processSkuPage = async (skuList) => {
             const uniqueSkus = Array.from(new Set((skuList || [])
               .filter(Boolean)
-              .map(s => s.toString().trim().toUpperCase())));
+              .map(s => s.toString().trim())));
 
             const chunks = [];
             for (let i = 0; i < uniqueSkus.length; i += chunkSize) {

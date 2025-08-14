@@ -23,31 +23,10 @@ router.get('/', shopifyController.getStores);
 router.post('/connect', shopifyController.connectStore);
 
 /**
- * @route GET /api/shopify/:storeId/products
- * @desc Get products from a specific Shopify store
- * @access Private
- */
-router.get('/:storeId/products', shopifyController.getStoreProducts);
-
-/**
- * @route GET /api/shopify/:storeId/inventory
- * @desc Get inventory levels from Shopify store
- * @access Private
- */
-router.get('/:storeId/inventory', shopifyController.getStoreInventory);
-
-/**
  * @route POST /api/shopify/:storeId/sync-inventory
  * @desc Bulk sync inventory to Shopify for a store
  * @access Private
  */
-router.post('/sync-inventory', shopifyController.syncInventory);
-
-/**
- * @route PUT /api/shopify/:storeId/inventory/:variantId
- * @desc Update inventory for a specific variant
- * @access Private
- */
-router.put('/:storeId/inventory/:variantId', shopifyController.updateInventory);
+router.post('/sync-with-shopify', shopifyController.syncWithShopify);
 
 module.exports = router;

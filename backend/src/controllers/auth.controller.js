@@ -10,19 +10,21 @@ class AuthController {
    */
   static async login(req, res) {
     try {
-      const { password } = req.body;
+      const { email, password } = req.body;
 
       // Validate input
-      if (!password) {
+      if (!email || !password) {
         return ResponseHelper.validationError(res, [
+          { field: 'email', message: 'Email is required' },
           { field: 'password', message: 'Password is required' }
         ]);
       }
 
-      // Check password against environment variable
+      // Check credentials against environment variables
+      const adminEmail = process.env.ADMIN_EMAIL;
       const adminPassword = process.env.ADMIN_PASSWORD;
-      if (!adminPassword) {
-        logger.error('ADMIN_PASSWORD environment variable not set');
+      if (!adminEmail || !adminPassword) {
+        logger.error('ADMIN_EMAIL or ADMIN_PASSWORD environment variable not set');
         return ResponseHelper.error(
           res,
           'Server configuration error',
@@ -31,8 +33,8 @@ class AuthController {
         );
       }
 
-      // Simple password comparison (in production, use hashed passwords)
-      if (password !== adminPassword) {
+      // Simple comparison (in production, use a user DB and hashed passwords)
+      if (email !== adminEmail || password !== adminPassword) {
         logger.auth('Failed login attempt', {
           ip: req.ip,
           userAgent: req.get('User-Agent'),
@@ -41,7 +43,7 @@ class AuthController {
 
         return ResponseHelper.error(
           res,
-          'Invalid password',
+          'Invalid email or password',
           401,
           'INVALID_CREDENTIALS'
         );
@@ -64,6 +66,7 @@ class AuthController {
           user: {
             role: 'admin',
             userId,
+            email,
             // client can decode token for iat/exp if needed
           }
         },

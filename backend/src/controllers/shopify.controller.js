@@ -3,15 +3,107 @@ const logger = require('../utils/logger');
 const shopifyService = require('../services/shopify.service');
 const inventoryService = require('../services/inventory.service');
 const SyncJob = require('../models/SyncJob');
-const syncService = require('../services/sync.service');
 const Store = require('../models/Store');
+const { v4: uuidv4 } = require('uuid');
 const encryption = require('../utils/encryption');
+const { createQueue } = require('../queues');
 
 /**
  * Shopify Controller
  * Handles Shopify store operations and API interactions
  */
 class ShopifyController {
+  constructor() {
+    // Queue to handle background sync with Shopify jobs
+    this.shopifySyncQueue = createQueue('shopify-sync');
+
+    // Bind methods to preserve 'this' when used as route handlers
+    this.getStores = this.getStores.bind(this);
+    this.connectStore = this.connectStore.bind(this);
+    this.syncWithShopify = this.syncWithShopify.bind(this);
+
+    // Register queue processor once
+    if (!this.shopifySyncQueue._shopifySyncProcessorAttached) {
+      this.shopifySyncQueue.process('sync-with-shopify', 1, async (job) => {
+        const { jobId, storeId, options = {} } = job.data || {};
+
+        let syncJobDoc = null;
+        try {
+          const procStartTs = Date.now();
+          logger.info(`[queue:shopify-sync][start][${jobId}]`, { bullJobId: job.id, storeId, options });
+          syncJobDoc = await SyncJob.findOne({ jobId });
+          if (syncJobDoc) await syncJobDoc.start();
+          if (syncJobDoc) {
+            logger.debug(`[queue:shopify-sync][db-loaded][${jobId}]`, { dbId: String(syncJobDoc._id) });
+          }
+
+          const store = await Store.findById(storeId);
+          if (!store) {
+            throw new Error('Store not found');
+          }
+
+          // Resolve and persist required Shopify fields only (no inventory quantity updates here)
+          const prep = await inventoryService.syncStoreFromProductVariants(storeId, {
+            ...options,
+            // Real-time progress hook
+            onProgress: async ({ processed, resolved, skipped, total }) => {
+              try {
+                // Update Bull job progress in percentage and SyncJob document
+                const pct = total > 0 ? Math.round((processed / total) * 100) : 0;
+                await job.progress(pct);
+                if (syncJobDoc) {
+                  await syncJobDoc.updateProgress(resolved, 0, total);
+                  if (typeof syncJobDoc.appendLogs === 'function') {
+                    await syncJobDoc.appendLogs([
+                      { level: 'info', message: `Batch progress: processed=${processed} resolved=${resolved} skipped=${skipped} total=${total} (${pct}%)` }
+                    ]);
+                  }
+                }
+                logger.info(`[queue:shopify-sync][progress][${jobId}]`, { processed, resolved, skipped, total, pct });
+              } catch (e) {
+                logger.warn(`[queue:shopify-sync][progress-failed][${jobId}] ${e.message}`);
+              }
+            },
+            // Allow tuning batch sizes/delays via env; safe defaults already in service
+            batchSize: Number(process.env.INVENTORY_BATCH_SIZE || 1000),
+            batchDelayMs: Number(process.env.INVENTORY_BATCH_DELAY_MS || 300)
+          });
+          const totalItems = Number(prep.total || 0);
+          const resolvedItems = Number(prep.countToUpdate || 0);
+          const skippedItems = Number(prep.skipped || 0);
+          logger.info(`[queue:shopify-sync][resolved][${jobId}]`, { totalItems, resolvedItems, skippedItems });
+
+          if (syncJobDoc) await syncJobDoc.updateProgress(resolvedItems, 0, totalItems);
+
+          const logs = [
+            { level: 'info', message: `Variants scanned: ${totalItems}` },
+            { level: 'info', message: `Variants with required Shopify fields: ${resolvedItems}` },
+            { level: 'info', message: `Variants skipped (missing fields/unqualified): ${skippedItems}` }
+          ];
+
+          // Complete job with summary only; no inventory push performed in this step
+          if (syncJobDoc) {
+            await syncJobDoc.complete(true, {
+              message: 'Shopify field resolution completed',
+              data: { logs, summary: prep },
+              stats: { resolved: resolvedItems, skipped: skippedItems, duration: syncJobDoc.duration }
+            });
+            logger.info(`[queue:shopify-sync][complete][${jobId}]`, { dbId: String(syncJobDoc._id), durationMs: Date.now() - procStartTs });
+          }
+
+          return { resolved: resolvedItems, skipped: skippedItems, total: totalItems };
+        } catch (error) {
+          if (syncJobDoc) {
+            await syncJobDoc.fail(error, false);
+          }
+          logger.error(`[queue:shopify-sync][error][${jobId}] ${error.message}`, { storeId, options });
+          throw error;
+        }
+      });
+
+      this.shopifySyncQueue._shopifySyncProcessorAttached = true;
+    }
+  }
   /**
    * Get all connected Shopify stores
    */
@@ -55,12 +147,10 @@ class ShopifyController {
       const existingStore = await Store.findOne({ shopifyDomain: normalizedDomain });
       if (existingStore) {
         return ResponseHelper.error(res, 'Store with this domain already exists', 400, 'STORE_ALREADY_EXISTS');
-      }
-      
+      }     
+
       // Test connection first
       const connectionTest = await shopifyService.testConnection(normalizedDomain, accessToken);
-
-      console.log('Connection test result:', connectionTest);
       
       if (!connectionTest.success) {
         return ResponseHelper.error(res, 'Failed to connect to Shopify store: ' + connectionTest.error, 400, 'CONNECTION_FAILED');
@@ -81,6 +171,13 @@ class ShopifyController {
       });
       
       await store.save();
+
+      // Fetch and cache the store's default location id immediately after connecting
+      try {
+        await shopifyService.getPrimaryLocationId(store._id);
+      } catch (locErr) {
+        logger.warn(`Unable to cache default Shopify location for store ${store._id}: ${locErr.message}`);
+      }
       
       // Return store without sensitive data
       const storeData = store.toObject();
@@ -92,131 +189,22 @@ class ShopifyController {
       logger.error('Error connecting Shopify store:', error);
       ResponseHelper.error(res, 'Failed to connect Shopify store', 500, 'SHOPIFY_CONNECTION_ERROR');
     }
-  }
-
-  /**
-   * Get products from a specific Shopify store
-   */
-  async getStoreProducts(req, res) {
-    try {
-      const { storeId } = req.params;
-      const { page = 1, limit = 50, query } = req.query;
-      
-      // Validate store exists and is connected
-      const store = await Store.findById(storeId);
-      if (!store) {
-        return ResponseHelper.error(res, 'Store not found', 404, 'STORE_NOT_FOUND');
-      }
-      
-      if (!store.connected) {
-        return ResponseHelper.error(res, 'Store is not connected. Please test connection first.', 400, 'STORE_NOT_CONNECTED');
-      }
-      
-      // Decrypt access token
-      const accessToken = encryption.decrypt(store.accessToken);
-      
-      // Use Shopify GraphQL API to fetch products
-      const result = await shopifyService.getProducts(storeId, {
-        page: parseInt(page),
-        limit: parseInt(limit),
-        query,
-        shopDomain: store.shopifyDomain,
-        accessToken
-      });
-      
-      ResponseHelper.success(res, result, 'Shopify products retrieved successfully');
-    } catch (error) {
-      logger.error('Error retrieving Shopify products:', error);
-      ResponseHelper.error(res, 'Failed to retrieve Shopify products', 500, 'SHOPIFY_PRODUCTS_ERROR');
-    }
-  }
-
-  /**
-   * Get inventory levels from Shopify store
-   */
-  async getStoreInventory(req, res) {
-    try {
-      const { storeId } = req.params;
-      const { productIds, variantIds } = req.query;
-      
-      // Validate store exists and is connected
-      const store = await Store.findById(storeId);
-      if (!store) {
-        return ResponseHelper.error(res, 'Store not found', 404, 'STORE_NOT_FOUND');
-      }
-      
-      if (!store.connected) {
-        return ResponseHelper.error(res, 'Store is not connected. Please test connection first.', 400, 'STORE_NOT_CONNECTED');
-      }
-      
-      // Decrypt access token
-      const accessToken = encryption.decrypt(store.accessToken);
-      
-      // Parse IDs if provided
-      const productIdList = productIds ? productIds.split(',') : undefined;
-      const variantIdList = variantIds ? variantIds.split(',') : undefined;
-      
-      // Use Shopify GraphQL API to fetch inventory levels
-      const inventory = await shopifyService.getInventory(storeId, {
-        productIds: productIdList,
-        variantIds: variantIdList,
-        shopDomain: store.shopDomain,
-        accessToken
-      });
-      
-      ResponseHelper.success(res, inventory, 'Shopify inventory retrieved successfully');
-    } catch (error) {
-      logger.error('Error retrieving Shopify inventory:', error);
-      ResponseHelper.error(res, 'Failed to retrieve Shopify inventory', 500, 'SHOPIFY_INVENTORY_ERROR');
-    }
-  }
-
-  /**
-   * Sync products from Shopify store
-   */
-  async syncStoreProducts(req, res) {
-    try {
-      const { storeId } = req.params;
-      const { syncType = 'full', vendorIds } = req.body;
-      
-      // Validate store exists and is connected
-      const store = await Store.findById(storeId);
-      if (!store) {
-        return ResponseHelper.error(res, 'Store not found', 404, 'STORE_NOT_FOUND');
-      }
-      
-      if (!store.connected) {
-        return ResponseHelper.error(res, 'Store is not connected. Please test connection first.', 400, 'STORE_NOT_CONNECTED');
-      }
-      
-      // Validate sync type
-      const validSyncTypes = ['full', 'inventory', 'products'];
-      if (!validSyncTypes.includes(syncType)) {
-        return ResponseHelper.error(res, 'Invalid sync type. Must be one of: ' + validSyncTypes.join(', '), 400, 'INVALID_SYNC_TYPE');
-      }
-      
-      // Create sync job in queue
-      const syncData = await syncService.startStoreSync({
-        storeId,
-        syncType,
-        vendorIds: vendorIds || [],
-        triggeredBy: 'manual',
-        userId: req.user?.id
-      });
-      
-      ResponseHelper.success(res, syncData, 'Shopify product sync started successfully');
-    } catch (error) {
-      logger.error('Error starting Shopify product sync:', error);
-      ResponseHelper.error(res, 'Failed to start Shopify product sync', 500, 'SHOPIFY_SYNC_ERROR');
-    }
-  }
+  }  
 
   /**
    * Bulk sync inventory from ProductVariant to Shopify for a store
    */
-  async syncInventory(req, res) {
+  async syncWithShopify(req, res) {
     try {
-      const { selectedSkus = [], onlyInStock = false, maxUpdates = 0, updateOutOfStock = true } = req.body || {};
+      // Updated flow: remove selection option and target only variants missing Shopify IDs
+      const { /* onlyInStock = false, */ maxUpdates = 0 } = req.body || {};
+      const reqStartTs = Date.now();
+      const reqId = req.headers['x-request-id'] || uuidv4();
+      logger.info(`[api:syncWithShopify][start][${reqId}]`, {
+        maxUpdates,
+        ip: req.ip,
+        path: req.originalUrl
+      });
 
       // Get the connected store for current admin context
       const store = await Store.findOne({ connectionStatus: 'connected' });
@@ -224,41 +212,57 @@ class ShopifyController {
         return ResponseHelper.error(res, 'No connected Shopify store found', 404, 'STORE_NOT_FOUND');
       }
       const storeId = String(store._id);
+      logger.debug(`[api:syncWithShopify][store-loaded][${reqId}]`, { storeId });
 
-      // Create SyncJob
-      const jobId = `job_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-      const job = await SyncJob.create({
-        jobId,
+      const jobId = uuidv4();
+      logger.debug(`[api:syncWithShopify][job-uuid-created][${reqId}]`, { jobId });
+
+      // Create SyncJob and enqueue background processing without waiting
+      const jobDoc = await SyncJob.create({
+        jobId,  
         type: 'manual',
         storeId,
         status: 'queued',
+        queueName: 'shopify-sync',
         data: {
-          selectedProducts: selectedSkus,
-          syncConfig: { batchSize: 50, syncInventory: true, updateOutOfStock, dryRun: false }
+          selectedProducts: [],
+          syncConfig: { batchSize: 50, syncInventory: false, dryRun: false },
+          filters: { onlyMissingShopifyFields: true, maxUpdates }
         },
-        metadata: { triggeredBy: 'manual', tags: ['inventory-sync'] }
+        metadata: { triggeredBy: 'manual', tags: ['shopify-sync'] }
       });
+      logger.info(`[api:syncWithShopify][job-doc-created][${reqId}]`, { dbId: String(jobDoc._id), jobId, storeId });
+     
+      // Push to queue (processor will fetch sizes and variant details from Shopify)
+      const bullJob = await this.shopifySyncQueue.add(
+        'sync-with-shopify',
+        {
+          jobId,
+          storeId,
+          // Processor will resolve missing Shopify fields (variantId, inventoryItemId) from Shopify by SKU
+          options: { maxUpdates, onlyMissingShopifyFields: true }
+        },
+        {
+          jobId,
+          removeOnComplete: true,
+          removeOnFail: false
+        }
+      );
+      logger.info(`[api:syncWithShopify][enqueued][${reqId}]`, { bullJobId: bullJob && bullJob.id, jobId, dbId: String(jobDoc._id) });
 
-      await job.start();
-
-      const result = await inventoryService.syncStoreFromProductVariants(storeId, {
-        selectedSkus,
-        onlyInStock,
-        maxUpdates,
-        updateOutOfStock
-      });
-
-      // Update job progress/result
-      await job.updateProgress(result.updated, result.failed, result.total);
-      await job.complete(true, {
-        message: 'Inventory sync completed',
-        data: { logs: result.logs },
-        stats: { inventoryUpdates: result.updated, errors: result.failed, duration: job.duration }
-      });
-
-      ResponseHelper.success(res, { jobId: job.jobId, ...result }, 'Inventory sync completed');
+      // Return immediately without waiting for processing
+      ResponseHelper.success(
+        res,
+        {
+          jobId: jobDoc._id,
+          status: 'queued',
+          message: 'Sync with Shopify job has been queued'
+        },
+        'Sync with Shopify queued'
+      );
+      logger.info(`[api:syncWithShopify][response][${reqId}]`, { durationMs: Date.now() - reqStartTs, dbId: String(jobDoc._id), jobId, bullJobId: bullJob && bullJob.id });
     } catch (error) {
-      logger.error('Error syncing inventory:', error);
+      logger.error(`[api:syncWithShopify][error] ${error.message}`);
       ResponseHelper.error(res, 'Failed to sync inventory', 500, 'SHOPIFY_BULK_INVENTORY_ERROR');
     }
   }
@@ -311,54 +315,7 @@ class ShopifyController {
       ResponseHelper.error(res, 'Failed to update Shopify inventory', 500, 'SHOPIFY_INVENTORY_UPDATE_ERROR');
     }
   }
-
-  /**
-   * Test Shopify store connection
-   */
-  async testConnection(req, res) {
-    try {
-      const { storeId } = req.params;
-      
-      // Validate store exists
-      const store = await Store.findById(storeId);
-      if (!store) {
-        return ResponseHelper.error(res, 'Store not found', 404, 'STORE_NOT_FOUND');
-      }
-      
-      // Decrypt access token
-      const accessToken = encryption.decrypt(store.accessToken);
-      
-      // Test API connection with stored credentials
-      const connectionTest = await shopifyService.testConnection(store.shopifyDomain, accessToken);
-      
-      // Update store connection status
-      await Store.findByIdAndUpdate(storeId, {
-        connected: connectionTest.success,
-        lastConnectionTest: new Date(),
-        connectionStatus: connectionTest.status,
-        lastError: connectionTest.success ? null : connectionTest.error,
-        shopInfo: connectionTest.success ? connectionTest.shopInfo : store.shopInfo
-      });
-      
-      const result = {
-        connected: connectionTest.success,
-        status: connectionTest.status,
-        shopInfo: {
-          ...connectionTest.shopInfo,
-          testedAt: new Date()
-        }
-      };
-      
-      if (!connectionTest.success) {
-        result.error = connectionTest.error;
-      }
-      
-      ResponseHelper.success(res, result, connectionTest.success ? 'Shopify connection test successful' : 'Shopify connection test failed');
-    } catch (error) {
-      logger.error('Error testing Shopify connection:', error);
-      ResponseHelper.error(res, 'Shopify connection test failed', 500, 'SHOPIFY_CONNECTION_TEST_ERROR');
-    }
-  }
+ 
 }
 
 module.exports = new ShopifyController();

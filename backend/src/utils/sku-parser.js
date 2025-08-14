@@ -139,15 +139,15 @@ class SKUParser {
     let sku = `${vendor}_${mainSku}`;
     
     if (color) {
-      sku += `-${color.toUpperCase()}`;
+      sku += `-${color}`;
     }
     
     if (size) {
-      sku += `-${size.toUpperCase()}`;
+      sku += `-${size}`;
     }
     
     if (suffix) {
-      sku += `-${suffix.toUpperCase()}`;
+      sku += `-${suffix}`;
     }
 
     return sku;
@@ -194,17 +194,17 @@ class SKUParser {
 
     // Generate color variants
     for (const color of colors) {
-      variants.push(`${vendor}_${mainSku}-${color.toUpperCase()}`);
+      variants.push(`${vendor}_${mainSku}-${color}`);
 
       // Generate color + size variants
       for (const size of sizes) {
-        variants.push(`${vendor}_${mainSku}-${color.toUpperCase()}-${size.toUpperCase()}`);
+        variants.push(`${vendor}_${mainSku}-${color}-${size}`);
       }
     }
 
     // Generate size-only variants
     for (const size of sizes) {
-      variants.push(`${vendor}_${mainSku}-${size.toUpperCase()}`);
+      variants.push(`${vendor}_${mainSku}-${size}`);
     }
 
     return variants;

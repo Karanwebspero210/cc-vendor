@@ -16,13 +16,13 @@ router.use(readOnlyLimiter);
  *        Query: page, limit, status, sku, stockQtyMin, stockQtyMax
  * @access Private
  */
-router.get('/all', validate.pagination, inventoryController.getAllProductsVariantsInventory);
+router.get('/all', validate.inventoryList, inventoryController.getAllProductsVariantsInventory);
 
 /**
  * @route GET /api/inventory/products/:productId/variants
  * @desc Alias route to list variants by productId param
  * @access Private
  */
-router.get('/products/:productId/variants', validate.pagination, inventoryController.getVariantsByProductId);
+router.get('/:productId', validate.inventoryList, inventoryController.getVariantsByProductId);
 
 module.exports = router;

@@ -45,14 +45,6 @@ const storeSchema = new mongoose.Schema({
     type: Boolean,
     default: true
   },
-  productCount: {
-    type: Number,
-    default: 0
-  },
-  lastSync: {
-    type: Date,
-    default: null
-  },
   connectionStatus: {
     type: String,
     enum: ['connected', 'disconnected', 'error'],
@@ -107,7 +99,6 @@ const storeSchema = new mongoose.Schema({
 // Indexes
 storeSchema.index({ shopifyDomain: 1 }, { unique: true });
 storeSchema.index({ isActive: 1 });
-storeSchema.index({ lastSync: 1 });
 storeSchema.index({ 'settings.autoSync': 1 });
 
 // Instance methods
@@ -128,15 +119,15 @@ storeSchema.methods.updateConnectionStatus = function(status, error = null) {
   return this.save();
 };
 
-storeSchema.methods.updateSyncInfo = function(productCount = null) {
-  this.lastSync = new Date();
-  if (productCount !== null) {
-    this.productCount = productCount;
-  }
-  return this.save();
+// Static methods
+storeSchema.statics.findActive = function() {
+  return this.find({ isActive: true });
 };
 
-// Static methods
+storeSchema.statics.findByDomain = function(domain) {
+  return this.findOne({ shopifyDomain: domain.toLowerCase() });
+};
+
 storeSchema.statics.findActive = function() {
   return this.find({ isActive: true });
 };
