@@ -1,6 +1,7 @@
 # Couture Candy Backend API
 
 ## Overview
+
 Node.js backend API for managing inventory synchronization between vendor APIs (Noxa) and Shopify stores. This documentation provides comprehensive information about the API endpoints, request/response formats, and integration guidelines.
 
 ## Postman Collection
@@ -23,6 +24,7 @@ We provide a Postman collection for easy API testing and integration. The collec
 3. Explore the available endpoints organized by functionality
 
 ## Tech Stack
+
 - **Runtime**: Node.js
 - **Framework**: Express.js
 - **Database**: MongoDB with Mongoose ODM
@@ -34,21 +36,30 @@ We provide a Postman collection for easy API testing and integration. The collec
 ## Installation & Setup
 
 ### Prerequisites
+
 - Node.js (v16+)
 - MongoDB (local installation)
 - npm or yarn
 
 ### Environment Variables
+
 Create a `.env` file in the backend root:
+
 ```env
 PORT=5000
 MONGODB_URI=mongodb://localhost:27017/couture-candy-vendor
 SESSION_SECRET=your-super-secret-session-key
 ADMIN_PASSWORD=your-admin-password
 NODE_ENV=development
+
+# Shopify Auto-Connect (Optional)
+# If provided, the store will be automatically connected on startup
+SHOPIFY_DOMAIN=your-store.myshopify.com
+SHOPIFY_ACCESS_TOKEN=your-shopify-access-token
 ```
 
 ### Installation
+
 ```bash
 cd backend
 npm install
@@ -58,11 +69,13 @@ npm run dev
 ## API Documentation
 
 ### Base URL
+
 ```
 http://localhost:5000/api
 ```
 
 ### Authentication Endpoints
+
 - `POST /auth/login` - Admin login
 - `POST /auth/logout` - Admin logout
 - `GET /auth/verify` - Verify session
@@ -70,28 +83,30 @@ http://localhost:5000/api
 ## WebSocket Authentication
 
 ### JWT Authentication
+
 WebSocket connections require JWT authentication. The client must send an `authenticate` event with a valid JWT token:
 
 ```javascript
 // Client-side example
-const socket = io('http://your-backend-url');
+const socket = io("http://your-backend-url");
 
 // Authenticate with JWT token
-socket.emit('authenticate', { 
-  token: 'your.jwt.token.here' 
+socket.emit("authenticate", {
+  token: "your.jwt.token.here",
 });
 
 // Handle authentication response
-socket.on('authenticated', (data) => {
-  console.log('Authenticated:', data);
+socket.on("authenticated", (data) => {
+  console.log("Authenticated:", data);
 });
 
-socket.on('authentication_error', (error) => {
-  console.error('Authentication failed:', error);
+socket.on("authentication_error", (error) => {
+  console.error("Authentication failed:", error);
 });
 ```
 
 ### JWT Configuration
+
 Add these to your `.env` file:
 
 ```env
@@ -101,7 +116,9 @@ JWT_EXPIRES_IN=24h  # Token expiration time (e.g., 24h, 7d)
 ```
 
 ### Protected Events
+
 The following WebSocket events require authentication:
+
 - `subscribe:all`
 - `request:queue-stats`
 - `admin:action`
@@ -109,6 +126,7 @@ The following WebSocket events require authentication:
 ### Error Responses
 
 #### Authentication Required
+
 ```json
 {
   "success": false,
@@ -119,6 +137,7 @@ The following WebSocket events require authentication:
 ```
 
 #### Invalid/Expired Token
+
 ```json
 {
   "success": false,
@@ -129,13 +148,16 @@ The following WebSocket events require authentication:
 ```
 
 ### Store Management
+
 - `GET /stores` - List all connected Shopify stores
-- `POST /stores` - Connect new Shopify store
 - `PUT /stores/:id` - Update store configuration
 - `DELETE /stores/:id` - Remove store connection
 - `GET /stores/:id/products` - Fetch store products
 
+**Note**: Store connection is now handled automatically on startup using environment variables (`SHOPIFY_DOMAIN` and `SHOPIFY_ACCESS_TOKEN`). The manual connect endpoint has been removed.
+
 ### Vendor Management
+
 - `GET /vendors` - List all configured vendors
 - `POST /vendors` - Add new vendor API configuration
 - `PUT /vendors/:id` - Update vendor configuration
@@ -144,6 +166,7 @@ The following WebSocket events require authentication:
 - `POST /vendors/:id/sync` - Sync vendor product data
 
 ### Product Mapping
+
 - `GET /mappings` - List product mappings
 - `POST /mappings` - Create new mapping
 - `PUT /mappings/:id` - Update mapping
@@ -151,6 +174,7 @@ The following WebSocket events require authentication:
 - `POST /mappings/bulk` - Bulk create mappings
 
 ### Inventory Synchronization
+
 - `POST /sync/manual` - Start manual inventory sync for selected products
 - `POST /sync/batch` - Create batch sync job for multiple products
 - `GET /sync/status/:id` - Get sync operation status
@@ -159,6 +183,7 @@ The following WebSocket events require authentication:
 - `GET /sync/queue` - View sync job queue
 
 ### Cron Job Management
+
 - `GET /cron/schedules` - List all scheduled cron jobs
 - `POST /cron/schedules` - Create new cron schedule
 - `PUT /cron/schedules/:id` - Update cron schedule
@@ -168,6 +193,7 @@ The following WebSocket events require authentication:
 ## Database Models
 
 ### Store Model
+
 ```javascript
 {
   name: String,
@@ -180,6 +206,7 @@ The following WebSocket events require authentication:
 ```
 
 ### Vendor Model
+
 ```javascript
 {
   name: String,
@@ -192,6 +219,7 @@ The following WebSocket events require authentication:
 ```
 
 ### Product Model
+
 ```javascript
 {
   vendorId: ObjectId,
@@ -212,6 +240,7 @@ The following WebSocket events require authentication:
 ```
 
 ### ProductMapping Model
+
 ```javascript
 {
   storeId: ObjectId,
@@ -229,6 +258,7 @@ The following WebSocket events require authentication:
 ```
 
 ### SyncLog Model
+
 ```javascript
 {
   type: String, // "manual" | "batch" | "automated"
@@ -261,6 +291,7 @@ The following WebSocket events require authentication:
 ```
 
 ### SyncSchedule Model
+
 ```javascript
 {
   name: String,
@@ -299,6 +330,7 @@ The following WebSocket events require authentication:
 ```
 
 ### SyncJob Model
+
 ```javascript
 {
   syncId: ObjectId,
@@ -328,6 +360,7 @@ The following WebSocket events require authentication:
 ## Key Features
 
 ### Product Selection & Sync Control
+
 - Single product selection for immediate sync
 - Multiple product selection for batch processing
 - SKU-based product filtering and selection
@@ -335,6 +368,7 @@ The following WebSocket events require authentication:
 - Real-time sync operation control (pause/resume/cancel)
 
 ### Job Queue Management
+
 - Background job processing with Bull Queue
 - Priority-based job scheduling
 - Job retry mechanisms with exponential backoff
@@ -342,13 +376,16 @@ The following WebSocket events require authentication:
 - Queue monitoring and management
 
 ### SKU Pattern Recognition
+
 The system handles various SKU patterns:
+
 - Main product SKUs: `E467W`, `6015`
 - Shopify variant SKUs: `noxa_E467W-White-2-CCSALE`
 - Pattern extraction for color/size mapping
 - Intelligent product matching algorithms
 
 ### Automated Scheduling
+
 - Flexible cron job configuration with cron expressions
 - Multiple schedule support per store/vendor combination
 - Schedule management (create/update/delete/pause)
@@ -356,12 +393,14 @@ The system handles various SKU patterns:
 - Comprehensive scheduling history and analytics
 
 ### Batch Processing
+
 - Configurable batch sizes for large sync operations
 - Intelligent batching based on API rate limits
 - Batch progress tracking and error handling
 - Resumable batch operations
 
 ### Security
+
 - Encrypted storage of API tokens
 - Session-based authentication
 - Input validation and sanitization
@@ -371,16 +410,19 @@ The system handles various SKU patterns:
 ## Development
 
 ### Running in Development
+
 ```bash
 npm run dev
 ```
 
 ### Running Tests
+
 ```bash
 npm test
 ```
 
 ### Code Structure
+
 - `controllers/` - Request handlers
 - `models/` - Database schemas
 - `services/` - Business logic
@@ -392,6 +434,7 @@ npm test
 - `utils/` - Helper functions
 
 ## Deployment
+
 - Configure production environment variables
 - Set up MongoDB connection
 - Configure reverse proxy (nginx)

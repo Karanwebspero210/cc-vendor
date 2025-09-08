@@ -43,7 +43,7 @@ const Login = () => {
   useEffect(() => {
     const token = getToken();
     if (token) {
-      navigate("/products", { replace: true });
+      navigate("/dashboard", { replace: true });
     }
   }, [navigate]);
 

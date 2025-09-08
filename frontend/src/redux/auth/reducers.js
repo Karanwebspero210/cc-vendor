@@ -14,6 +14,7 @@ export default function authReducer(state = initialState, action) {
   const { type, payload } = action;
 
   switch (type) {
+    // Removed GET_PROFILE_* cases per undo request
     case constants.LOGIN_REQUEST:
       return {
         ...state,

@@ -1,7 +1,7 @@
-const Queue = require('bull');
-const logger = require('../utils/logger');
-const JobPriority = require('../utils/job-priority');
-const ErrorHandler = require('../utils/error-handler');
+const logger = require("../utils/logger");
+const JobPriority = require("../utils/job-priority");
+const ErrorHandler = require("../utils/error-handler");
+const InMemoryQueue = require("./inmemory-queue");
 
 /**
  * Sync Queue Management
@@ -21,19 +21,8 @@ class SyncQueue {
    */
   async initialize() {
     try {
-      // Create the Bull queue
-      this.queue = new Queue('sync queue', {
-        redis: this.redisConfig,
-        defaultJobOptions: {
-          removeOnComplete: 10,
-          removeOnFail: 5,
-          attempts: 3,
-          backoff: {
-            type: 'exponential',
-            delay: 2000
-          }
-        }
-      });
+      // Create the in-memory queue
+      this.queue = new InMemoryQueue("sync");
 
       // Setup event listeners
       this.setupEventListeners();
@@ -42,12 +31,12 @@ class SyncQueue {
       this.setupProcessors();
 
       this.isInitialized = true;
-      logger.info('Sync queue initialized successfully');
+      logger.info("Sync queue initialized successfully");
 
       return this.queue;
     } catch (error) {
-      logger.error('Failed to initialize sync queue:', error);
-      throw ErrorHandler.handleQueueError(error, { queueName: 'sync' });
+      logger.error("Failed to initialize sync queue:", error);
+      throw ErrorHandler.handleQueueError(error, { queueName: "sync" });
     }
   }
 
@@ -56,84 +45,84 @@ class SyncQueue {
    */
   setupEventListeners() {
     // Job completed
-    this.queue.on('completed', (job, result) => {
+    this.queue.on("completed", (job, result) => {
       logger.info(`Sync job ${job.id} completed successfully`, {
         jobId: job.id,
         syncId: job.data.syncId,
         duration: job.finishedOn - job.processedOn,
-        result: result
+        result: result,
       });
 
-      this.emitEvent('job:completed', { job, result });
+      this.emitEvent("job:completed", { job, result });
     });
 
     // Job failed
-    this.queue.on('failed', (job, error) => {
+    this.queue.on("failed", (job, error) => {
       logger.error(`Sync job ${job.id} failed:`, {
         jobId: job.id,
         syncId: job.data.syncId,
         error: error.message,
         attempts: job.attemptsMade,
-        maxAttempts: job.opts.attempts
+        maxAttempts: job.opts.attempts,
       });
 
-      this.emitEvent('job:failed', { job, error });
+      this.emitEvent("job:failed", { job, error });
     });
 
     // Job started (active)
-    this.queue.on('active', (job) => {
+    this.queue.on("active", (job) => {
       logger.info(`Sync job ${job.id} started processing`, {
         jobId: job.id,
         syncId: job.data.syncId,
-        priority: job.opts.priority
+        priority: job.opts.priority,
       });
 
-      this.emitEvent('job:started', { job });
+      this.emitEvent("job:started", { job });
     });
 
     // Job progress
-    this.queue.on('progress', (job, progress) => {
+    this.queue.on("progress", (job, progress) => {
       logger.debug(`Sync job ${job.id} progress: ${progress}%`, {
         jobId: job.id,
         syncId: job.data.syncId,
-        progress
+        progress,
       });
 
-      this.emitEvent('job:progress', { job, progress });
+      this.emitEvent("job:progress", { job, progress });
     });
 
     // Job stalled
-    this.queue.on('stalled', (job) => {
+    this.queue.on("stalled", (job) => {
       logger.warn(`Sync job ${job.id} stalled`, {
         jobId: job.id,
-        syncId: job.data.syncId
+        syncId: job.data.syncId,
       });
 
-      this.emitEvent('job:stalled', { job });
+      this.emitEvent("job:stalled", { job });
     });
 
     // Queue error
-    this.queue.on('error', (error) => {
-      logger.error('Sync queue error:', error);
-      this.emitEvent('queue:error', { error });
+    this.queue.on("error", (error) => {
+      logger.error("Sync queue error:", error);
+      this.emitEvent("queue:error", { error });
     });
 
     // Queue waiting
-    this.queue.on('waiting', (jobId) => {
+    this.queue.on("waiting", (jobId) => {
       logger.debug(`Job ${jobId} is waiting in sync queue`);
-      this.emitEvent('job:waiting', { jobId });
+      this.emitEvent("job:waiting", { jobId });
     });
 
     // Queue paused
-    this.queue.on('paused', () => {
-      logger.info('Sync queue paused');
-      this.emitEvent('queue:paused', {});
+    this.queue.on("paused", () => {
+      logger.info("Sync queue paused");
+      this.emitEvent("queue:paused", {});
     });
 
     // Queue resumed
-    this.queue.on('resumed', () => {
-      logger.info('Sync queue resumed');
-      this.emitEvent('queue:resumed', {});
+    this.queue.on("resumed", () => {
+      logger.info("Sync queue resumed");
+      this.emitEvent("queue:resumed", {});
     });
   }
 
@@ -142,11 +131,11 @@ class SyncQueue {
    */
   setupProcessors() {
     // Main sync processor
-    this.queue.process('sync', 5, async (job) => {
+    this.queue.process("sync", 5, async (job) => {
       return this.processSyncJob(job);
     });
 
-    logger.info('Sync queue processors setup complete');
+    logger.info("Sync queue processors setup complete");
   }
 
   /**
@@ -160,14 +149,14 @@ class SyncQueue {
         syncId,
         storeId,
         vendorId,
-        syncType
+        syncType,
       });
 
       // Update job progress
       await job.progress(5);
 
       // Import sync job processor
-      const SyncJob = require('../jobs/sync-job');
+      const SyncJob = require("../jobs/sync-job");
 
       // Process the sync job
       const result = await new Promise((resolve, reject) => {
@@ -179,14 +168,13 @@ class SyncQueue {
 
       logger.info(`Sync job ${job.id} completed:`, result);
       return result;
-
     } catch (error) {
       logger.error(`Sync job ${job.id} failed:`, error);
       throw ErrorHandler.handleSyncError(error, {
         syncId,
         storeId,
         vendorId,
-        syncType
+        syncType,
       });
     }
   }
@@ -196,7 +184,7 @@ class SyncQueue {
    */
   async addSyncJob(jobData, options = {}) {
     if (!this.isInitialized) {
-      throw new Error('Sync queue not initialized');
+      throw new Error("Sync queue not initialized");
     }
 
     try {
@@ -204,37 +192,36 @@ class SyncQueue {
       const priorityInfo = JobPriority.determinePriority({
         syncType: jobData.syncType,
         triggeredBy: jobData.options?.triggeredBy,
-        userInitiated: jobData.options?.triggeredBy === 'manual',
-        isScheduled: jobData.options?.triggeredBy === 'scheduled'
+        userInitiated: jobData.options?.triggeredBy === "manual",
+        isScheduled: jobData.options?.triggeredBy === "scheduled",
       });
 
       // Merge queue options with priority settings
       const jobOptions = {
         ...priorityInfo.queueOptions,
         ...options,
-        priority: priorityInfo.priorityLevel
+        priority: priorityInfo.priorityLevel,
       };
 
       // Add job to queue
-      const job = await this.queue.add('sync', jobData, jobOptions);
+      const job = await this.queue.add("sync", jobData, jobOptions);
 
       logger.info(`Sync job added to queue:`, {
         jobId: job.id,
         syncId: jobData.syncId,
         priority: priorityInfo.priority,
         priorityLevel: priorityInfo.priorityLevel,
-        reason: priorityInfo.reason
+        reason: priorityInfo.reason,
       });
 
-      this.emitEvent('job:added', { job, priority: priorityInfo });
+      this.emitEvent("job:added", { job, priority: priorityInfo });
 
       return job;
-
     } catch (error) {
-      logger.error('Failed to add sync job to queue:', error);
+      logger.error("Failed to add sync job to queue:", error);
       throw ErrorHandler.handleQueueError(error, {
-        queueName: 'sync',
-        jobType: 'sync'
+        queueName: "sync",
+        jobType: "sync",
       });
     }
   }
@@ -244,7 +231,7 @@ class SyncQueue {
    */
   async getJob(jobId) {
     if (!this.isInitialized) {
-      throw new Error('Sync queue not initialized');
+      throw new Error("Sync queue not initialized");
     }
 
     try {
@@ -260,7 +247,7 @@ class SyncQueue {
    */
   async cancelJob(jobId) {
     if (!this.isInitialized) {
-      throw new Error('Sync queue not initialized');
+      throw new Error("Sync queue not initialized");
     }
 
     try {
@@ -272,7 +259,7 @@ class SyncQueue {
       await job.remove();
       logger.info(`Sync job ${jobId} cancelled`);
 
-      this.emitEvent('job:cancelled', { jobId });
+      this.emitEvent("job:cancelled", { jobId });
 
       return true;
     } catch (error) {
@@ -286,7 +273,7 @@ class SyncQueue {
    */
   async retryJob(jobId) {
     if (!this.isInitialized) {
-      throw new Error('Sync queue not initialized');
+      throw new Error("Sync queue not initialized");
     }
 
     try {
@@ -298,7 +285,7 @@ class SyncQueue {
       await job.retry();
       logger.info(`Sync job ${jobId} retried`);
 
-      this.emitEvent('job:retried', { jobId });
+      this.emitEvent("job:retried", { jobId });
 
       return true;
     } catch (error) {
@@ -312,18 +299,19 @@ class SyncQueue {
    */
   async getStats() {
     if (!this.isInitialized) {
-      throw new Error('Sync queue not initialized');
+      throw new Error("Sync queue not initialized");
     }
 
     try {
-      const [waiting, active, completed, failed, delayed, paused] = await Promise.all([
-        this.queue.getWaiting(),
-        this.queue.getActive(),
-        this.queue.getCompleted(),
-        this.queue.getFailed(),
-        this.queue.getDelayed(),
-        this.queue.isPaused()
-      ]);
+      const [waiting, active, completed, failed, delayed, paused] =
+        await Promise.all([
+          this.queue.getWaiting(),
+          this.queue.getActive(),
+          this.queue.getCompleted(),
+          this.queue.getFailed(),
+          this.queue.getDelayed(),
+          this.queue.isPaused(),
+        ]);
 
       return {
         waiting: waiting.length,
@@ -332,10 +320,15 @@ class SyncQueue {
         failed: failed.length,
         delayed: delayed.length,
         paused,
-        total: waiting.length + active.length + completed.length + failed.length + delayed.length
+        total:
+          waiting.length +
+          active.length +
+          completed.length +
+          failed.length +
+          delayed.length,
       };
     } catch (error) {
-      logger.error('Failed to get sync queue stats:', error);
+      logger.error("Failed to get sync queue stats:", error);
       throw error;
     }
   }
@@ -345,12 +338,12 @@ class SyncQueue {
    */
   async getJobs(status, start = 0, end = 10) {
     if (!this.isInitialized) {
-      throw new Error('Sync queue not initialized');
+      throw new Error("Sync queue not initialized");
     }
 
     try {
       const jobs = await this.queue.getJobs([status], start, end);
-      return jobs.map(job => ({
+      return jobs.map((job) => ({
         id: job.id,
         name: job.name,
         data: job.data,
@@ -361,7 +354,7 @@ class SyncQueue {
         timestamp: job.timestamp,
         processedOn: job.processedOn,
         finishedOn: job.finishedOn,
-        failedReason: job.failedReason
+        failedReason: job.failedReason,
       }));
     } catch (error) {
       logger.error(`Failed to get ${status} jobs:`, error);
@@ -374,15 +367,15 @@ class SyncQueue {
    */
   async pause() {
     if (!this.isInitialized) {
-      throw new Error('Sync queue not initialized');
+      throw new Error("Sync queue not initialized");
     }
 
     try {
       await this.queue.pause();
-      logger.info('Sync queue paused');
+      logger.info("Sync queue paused");
       return true;
     } catch (error) {
-      logger.error('Failed to pause sync queue:', error);
+      logger.error("Failed to pause sync queue:", error);
       throw error;
     }
   }
@@ -392,15 +385,15 @@ class SyncQueue {
    */
   async resume() {
     if (!this.isInitialized) {
-      throw new Error('Sync queue not initialized');
+      throw new Error("Sync queue not initialized");
     }
 
     try {
       await this.queue.resume();
-      logger.info('Sync queue resumed');
+      logger.info("Sync queue resumed");
       return true;
     } catch (error) {
-      logger.error('Failed to resume sync queue:', error);
+      logger.error("Failed to resume sync queue:", error);
       throw error;
     }
   }
@@ -408,9 +401,9 @@ class SyncQueue {
   /**
    * Clean completed/failed jobs
    */
-  async clean(grace = 0, status = 'completed') {
+  async clean(grace = 0, status = "completed") {
     if (!this.isInitialized) {
-      throw new Error('Sync queue not initialized');
+      throw new Error("Sync queue not initialized");
     }
 
     try {
@@ -439,7 +432,7 @@ class SyncQueue {
   emitEvent(event, data) {
     const handlers = this.eventHandlers.get(event);
     if (handlers) {
-      handlers.forEach(handler => {
+      handlers.forEach((handler) => {
         try {
           handler(data);
         } catch (error) {
@@ -463,7 +456,7 @@ class SyncQueue {
     if (this.queue) {
       await this.queue.close();
       this.isInitialized = false;
-      logger.info('Sync queue closed');
+      logger.info("Sync queue closed");
     }
   }
 
@@ -474,7 +467,7 @@ class SyncQueue {
     if (!this.isInitialized) {
       return {
         healthy: false,
-        error: 'Queue not initialized'
+        error: "Queue not initialized",
       };
     }
 
@@ -483,13 +476,13 @@ class SyncQueue {
       return {
         healthy: true,
         stats,
-        timestamp: new Date().toISOString()
+        timestamp: new Date().toISOString(),
       };
     } catch (error) {
       return {
         healthy: false,
         error: error.message,
-        timestamp: new Date().toISOString()
+        timestamp: new Date().toISOString(),
       };
     }
   }

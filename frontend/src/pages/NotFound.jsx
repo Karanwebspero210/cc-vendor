@@ -9,7 +9,7 @@ const NotFound = () => {
   const isAuth = auth?.isAuth || Boolean(getToken());
 
   const handleBackAction = () => {
-    navigate(isAuth ? "/products" : "/login");
+    navigate(isAuth ? "/dashboard" : "/login");
   };
 
   return (

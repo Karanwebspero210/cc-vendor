@@ -3,9 +3,9 @@ export const getMessage = (data) => {
     return {
       type: data?.status || "success",
       msg:
-        data?.message ||
-        data?.error ||
-        "Something went wrong, please try after sometime!",
+        data?.data?.message ||
+        data?.error?.message ||
+        "Please try after sometime!",
     };
   } else return null;
 };

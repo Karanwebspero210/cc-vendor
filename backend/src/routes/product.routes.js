@@ -1,7 +1,10 @@
-const express = require('express');
-const { authenticateAdmin } = require('../middleware/auth.middleware');
-const { defaultLimiter, syncLimiter } = require('../middleware/rate-limit.middleware');
-const productController = require('../controllers/product.controller');
+const express = require("express");
+const { authenticateAdmin } = require("../middleware/auth.middleware");
+const {
+  defaultLimiter,
+  syncLimiter,
+} = require("../middleware/rate-limit.middleware");
+const productController = require("../controllers/product.controller");
 
 const router = express.Router();
 
@@ -19,8 +22,7 @@ router.use(defaultLimiter);
  * @body {number} [limit=100] - Number of products per page
  * @returns {Object} - Job information including jobId
  */
-router.post('/sync', syncLimiter, productController.startProductSync);
-
+router.post("/sync", syncLimiter, productController.startProductSync);
 
 /**
  * @route GET /api/products
@@ -30,7 +32,14 @@ router.post('/sync', syncLimiter, productController.startProductSync);
  * @query {number} [limit=50] - Items per page
  * @query {string} [search] - Search term for sku, title, or description
  */
-router.get('/', productController.getProducts);
+router.get("/", productController.getProducts);
+
+/**
+ * @route GET /api/products/export
+ * @desc Export all products as CSV
+ * @access Private (Admin)
+ */
+router.get("/export", productController.exportAllProductsCsv);
 
 /**
  * @route POST /api/products/inventory/update
@@ -39,7 +48,10 @@ router.get('/', productController.getProducts);
  * @body {string[]} skus - Array of SKUs to update inventory for
  * @returns {Object} - Job information including jobId
  */
-router.post('/inventory/update', syncLimiter, productController.updateInventoryBySKUs);
-
+router.post(
+  "/inventory/update",
+  syncLimiter,
+  productController.updateInventoryBySKUs
+);
 
 module.exports = router;

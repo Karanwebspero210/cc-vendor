@@ -28,3 +28,13 @@ export function getAuthHeader() {
   const token = getToken();
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
+
+export function getStoreName() {
+  const storeName = localStorage.getItem("storeName");
+  console.log(storeName, "storeName");
+  return storeName ? storeName : "";
+}
+
+export const clearStoreName = () => {
+  localStorage.removeItem("storeName");
+};

@@ -1,1 +1,13 @@
 @import "tailwindcss";
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+/* Prevent rubber-band overscroll on the main scroll containers */
+html,
+body {
+  overscroll-behavior: none;
+}

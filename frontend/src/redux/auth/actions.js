@@ -5,6 +5,7 @@ import * as services from "../../services/index";
 import * as messages from "../toast/messages";
 import { DELETE, GET, POST, PUT, SHOW_TOAST } from "../constants/index";
 import API_REQUEST from "../request/index";
+import { clearStoreName, clearToken } from "../../utils/storage";
 
 export const login = (data) => async (dispatch) => {
   try {
@@ -15,8 +16,6 @@ export const login = (data) => async (dispatch) => {
 
     if (token) {
       services.setToken(token);
-
-      // const res2 = await API_REQUEST(GET, apis.GET_USER_PROFILE_API);
 
       const msg = messages.getMessage(resp.data);
       dispatch({ type: SHOW_TOAST, payload: msg });
@@ -58,18 +57,15 @@ export const logout = () => async (dispatch) => {
   try {
     // Best-effort API logout; ignore failures
     try {
-      await API_REQUEST(POST, apis.ACCOUNT_LOGOUT_API);
+      // await API_REQUEST(POST, apis.ACCOUNT_LOGOUT_API);
+      clearToken();
+      clearStoreName();
     } catch (_) {}
 
-    // Clear tokens from both storages (services and legacy utils)
-    try {
-      services.removeToken?.();
-    } catch (_) {}
-    try {
-      const { clearToken } = await import("../../utils/storage");
-      clearToken?.();
-    } catch (_) {}
+    
   } finally {
     dispatch({ type: constants.LOGOUT });
   }
 };
+
+// getCurrentUser thunk was removed per request to undo changes

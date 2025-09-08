@@ -52,17 +52,51 @@ const API_REQUEST = async (
     Object.keys(cache).forEach((key) => delete cache[key]);
   }
   try {
-    const response = await axios({
+    const axiosConfig = {
       headers,
       method,
       url: `${BASE_URL}/${url}`,
-      data,
       onUploadProgress: (progressEvent) => {
         if (dispatch && onUploadProgress) {
           // handle progress
         }
       },
-    });
+    };
+
+    // For GET requests, send params via query string instead of request body
+    if (method === GET) {
+      axiosConfig.params = data;
+    } else {
+      axiosConfig.data = data;
+    }
+
+    const response = await axios(axiosConfig);
+    // Global auth error handling for success responses that carry error payloads
+    try {
+      const payload = response && response.data ? response.data : {};
+      const isFailureFlag =
+        payload && (payload.success === false || payload.status === "error");
+      const errorObj = payload && (payload.error || {});
+      const errorCode = errorObj && errorObj.code ? errorObj.code : undefined;
+      const errorMessage =
+        errorObj && errorObj.message
+          ? errorObj.message
+          : payload && payload.message
+          ? payload.message
+          : "";
+      const tokenExpired = /token has expired/i.test(
+        String(errorMessage || "")
+      );
+      const isAuthError = errorCode === "AUTH_ERROR" || tokenExpired;
+      if (isFailureFlag && isAuthError) {
+        services.removeToken();
+        try {
+          window.location.href = "/login";
+        } catch (_) {}
+        // Prevent caching this response and signal error to callers
+        throw new Error("AUTH_ERROR");
+      }
+    } catch (_) {}
 
     if (method === GET) {
       cache[cacheKey] = {
@@ -77,7 +111,9 @@ const API_REQUEST = async (
       (error.response.status === 403 || error.response.status === 401)
     ) {
       services.removeToken();
-      // Optionally redirect: window.location.href = '/signin';
+      try {
+        window.location.href = "/login";
+      } catch (_) {}
     }
     throw error;
   }
