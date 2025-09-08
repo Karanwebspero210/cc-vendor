@@ -1,7 +1,7 @@
-const axios = require('axios');
-const { encrypt, decrypt } = require('../utils/encryption');
-const logger = require('../utils/logger');
-const Store = require('../models/Store');
+const axios = require("axios");
+const { encrypt, decrypt } = require("../utils/encryption");
+const logger = require("../utils/logger");
+const Store = require("../models/Store");
 
 /**
  * Shopify Service
@@ -9,7 +9,7 @@ const Store = require('../models/Store');
  */
 class ShopifyService {
   constructor() {
-    this.apiVersion = process.env.SHOPIFY_API_VERSION || '2023-10';
+    this.apiVersion = process.env.SHOPIFY_API_VERSION || "2023-10";
   }
 
   /**
@@ -19,7 +19,7 @@ class ShopifyService {
     try {
       const store = await Store.findById(storeId);
       if (!store) {
-        throw new Error('Store not found');
+        throw new Error("Store not found");
       }
 
       const accessToken = decrypt(store.accessToken);
@@ -33,14 +33,20 @@ class ShopifyService {
         }
       `;
       const variables = { id: variantId };
-      const resp = await this.makeGraphQLRequest(store.shopifyDomain, accessToken, query, variables);
+      const resp = await this.makeGraphQLRequest(
+        store.shopifyDomain,
+        accessToken,
+        query,
+        variables
+      );
       const v = resp.data?.data?.productVariant;
       return {
         inventoryItemId: v?.inventoryItem?.id || null,
-        inventoryQuantity: typeof v?.inventoryQuantity === 'number' ? v.inventoryQuantity : null
+        inventoryQuantity:
+          typeof v?.inventoryQuantity === "number" ? v.inventoryQuantity : null,
       };
     } catch (error) {
-      logger.error('Error fetching inventory item for variant:', error);
+      logger.error("Error fetching inventory item for variant:", error);
       throw error;
     }
   }
@@ -53,7 +59,7 @@ class ShopifyService {
     try {
       const store = await Store.findById(storeId);
       if (!store) {
-        throw new Error('Store not found');
+        throw new Error("Store not found");
       }
 
       if (!Array.isArray(skus) || skus.length === 0) {
@@ -84,20 +90,30 @@ class ShopifyService {
       // Shopify search length/complexity can be limited; chunk SKUs conservatively
       const chunkSize = 25;
       const outMap = new Map();
-      const sleep = (ms) => new Promise(res => setTimeout(res, ms));
-      const perChunkDelayMs = Number(process.env.SHOPIFY_GRAPHQL_CHUNK_DELAY_MS || 200); // throttle between chunk requests
+      const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
+      const perChunkDelayMs = Number(
+        process.env.SHOPIFY_GRAPHQL_CHUNK_DELAY_MS || 200
+      ); // throttle between chunk requests
       // Helper to safely escape quotes/backslashes in SKUs for GraphQL search
-      const escapeSku = (s) => String(s).trim().replace(/\\/g, '\\\\').replace(/\"/g, '\\"');
+      const escapeSku = (s) =>
+        String(s).trim().replace(/\\/g, "\\\\").replace(/\"/g, '\\"');
       for (let i = 0; i < skus.length; i += chunkSize) {
         const chunk = skus.slice(i, i + chunkSize).filter(Boolean);
         if (!chunk.length) continue;
         // Quote SKUs to ensure exact-match search even when SKUs contain spaces/special characters
-        const orQuery = chunk.map(s => `sku:\"${escapeSku(s)}\"`).join(' OR ');
+        const orQuery = chunk
+          .map((s) => `sku:\"${escapeSku(s)}\"`)
+          .join(" OR ");
         let after = null;
         let page = 0;
         do {
           const variables = { first: 100, query: orQuery, after };
-          const resp = await this.makeGraphQLRequest(store.shopifyDomain, accessToken, graphqlQuery, variables);
+          const resp = await this.makeGraphQLRequest(
+            store.shopifyDomain,
+            accessToken,
+            graphqlQuery,
+            variables
+          );
           const body = resp.data?.data?.productVariants;
           const edges = body?.edges || [];
           for (const edge of edges) {
@@ -107,8 +123,11 @@ class ShopifyService {
             outMap.set(key, {
               variantId: node.id,
               inventoryItemId: node.inventoryItem?.id || null,
-              inventoryQuantity: typeof node.inventoryQuantity === 'number' ? node.inventoryQuantity : null,
-              raw: node
+              inventoryQuantity:
+                typeof node.inventoryQuantity === "number"
+                  ? node.inventoryQuantity
+                  : null,
+              raw: node,
             });
           }
           after = edges.length ? edges[edges.length - 1].cursor : null;
@@ -121,7 +140,7 @@ class ShopifyService {
 
       return outMap;
     } catch (error) {
-      logger.error('Error getting product variants by SKUs:', error);
+      logger.error("Error getting product variants by SKUs:", error);
       throw error;
     }
   }
@@ -131,7 +150,7 @@ class ShopifyService {
    */
   async getPrimaryLocationId(storeId) {
     const store = await Store.findById(storeId);
-    if (!store) throw new Error('Store not found');
+    if (!store) throw new Error("Store not found");
 
     // Return cached if available
     if (store.settings?.defaultLocationId) {
@@ -155,12 +174,17 @@ class ShopifyService {
       }
     `;
 
-    const resp = await this.makeGraphQLRequest(store.shopifyDomain, accessToken, query, { first: 5 });
+    const resp = await this.makeGraphQLRequest(
+      store.shopifyDomain,
+      accessToken,
+      query,
+      { first: 5 }
+    );
     const edges = resp.data?.data?.locations?.edges || [];
-    if (!edges.length) throw new Error('No Shopify locations found');
+    if (!edges.length) throw new Error("No Shopify locations found");
 
     // Choose the first active as primary
-    const active = edges.find(e => e.node?.isActive) || edges[0];
+    const active = edges.find((e) => e.node?.isActive) || edges[0];
     const locationId = active.node.id;
 
     // Cache on store
@@ -182,24 +206,28 @@ class ShopifyService {
     try {
       // Validate input parameters
       if (!shopDomain || !accessToken) {
-        throw new Error('Shop domain and access token are required');
+        throw new Error("Shop domain and access token are required");
       }
 
       // Normalize the shop domain
       const normalizedDomain = shopDomain
-        .replace(/^https?:\/\//, '') // Remove http:// or https://
-        .replace(/\/.*$/, '')         // Remove any path
+        .replace(/^https?:\/\//, "") // Remove http:// or https://
+        .replace(/\/.*$/, "") // Remove any path
         .toLowerCase();
 
       // Make a request to the shop endpoint to verify the token
-      const response = await this.makeRequest(normalizedDomain, accessToken, 'shop.json');
-      
+      const response = await this.makeRequest(
+        normalizedDomain,
+        accessToken,
+        "shop.json"
+      );
+
       // Check if we got a valid response
       if (!response.data || !response.data.shop) {
-        throw new Error('Invalid response format from Shopify API');
+        throw new Error("Invalid response format from Shopify API");
       }
 
-      const { shop } = response.data;     
+      const { shop } = response.data;
 
       return {
         success: true,
@@ -215,50 +243,55 @@ class ShopifyService {
           timezone_offset_minutes: shop.timezone_offset_minutes,
           timezone_offset_minutes_clock: shop.timezone_offset_minutes_clock,
           timezone_abbr: shop.timezone_abbr,
-        }
+        },
       };
-
     } catch (error) {
-      let errorMessage = 'Failed to connect to Shopify store';
+      let errorMessage = "Failed to connect to Shopify store";
       let errorDetails = {};
 
       if (error.response) {
         // Handle different HTTP status codes
         const { status, statusText, data } = error.response;
-        
+
         switch (status) {
           case 401:
-            errorMessage = 'Invalid access token. Please check your credentials.';
+            errorMessage =
+              "Invalid access token. Please check your credentials.";
             break;
           case 403:
-            errorMessage = 'Access denied. The provided access token does not have sufficient permissions.';
+            errorMessage =
+              "Access denied. The provided access token does not have sufficient permissions.";
             break;
           case 404:
-            errorMessage = 'Shop not found. Please check the store domain.';
+            errorMessage = "Shop not found. Please check the store domain.";
             break;
           case 429:
-            errorMessage = 'API rate limit exceeded. Please try again later.';
+            errorMessage = "API rate limit exceeded. Please try again later.";
             break;
           default:
             errorMessage = `Shopify API Error: ${status} ${statusText}`;
         }
-        
+
         errorDetails = {
           statusCode: status,
           statusText,
           url: error.config?.url,
-          method: error.config?.method
+          method: error.config?.method,
         };
       } else {
         errorMessage = error.message || errorMessage;
       }
-      
-      logger.error(`Shopify connection test failed: ${errorMessage}`, errorDetails);
-      
+
+      logger.error(
+        `Shopify connection test failed: ${errorMessage}`,
+        errorDetails
+      );
+
       return {
         success: false,
         error: errorMessage,
-        details: process.env.NODE_ENV === 'development' ? errorDetails : undefined
+        details:
+          process.env.NODE_ENV === "development" ? errorDetails : undefined,
       };
     }
   }
@@ -270,15 +303,19 @@ class ShopifyService {
     try {
       const store = await Store.findById(storeId);
       if (!store) {
-        throw new Error('Store not found');
+        throw new Error("Store not found");
       }
 
       const accessToken = decrypt(store.accessToken);
-      const response = await this.makeRequest(store.shopDomain, accessToken, 'shop.json');
-      
+      const response = await this.makeRequest(
+        store.shopDomain,
+        accessToken,
+        "shop.json"
+      );
+
       return response.data.shop;
     } catch (error) {
-      logger.error('Error getting shop info:', error);
+      logger.error("Error getting shop info:", error);
       throw error;
     }
   }
@@ -290,13 +327,13 @@ class ShopifyService {
     try {
       const { limit = 50, cursor, query } = options;
       const store = await Store.findById(storeId);
-      
+
       if (!store) {
-        throw new Error('Store not found');
+        throw new Error("Store not found");
       }
 
       const accessToken = decrypt(store.accessToken);
-      
+
       const graphqlQuery = `
         query getProducts($first: Int!, $after: String, $query: String) {
           products(first: $first, after: $after, query: $query) {
@@ -337,13 +374,18 @@ class ShopifyService {
       const variables = {
         first: limit,
         after: cursor,
-        query
+        query,
       };
 
-      const response = await this.makeGraphQLRequest(store.shopifyDomain, accessToken, graphqlQuery, variables);
+      const response = await this.makeGraphQLRequest(
+        store.shopifyDomain,
+        accessToken,
+        graphqlQuery,
+        variables
+      );
       return response.data.data.products;
     } catch (error) {
-      logger.error('Error getting Shopify products:', error);
+      logger.error("Error getting Shopify products:", error);
       throw error;
     }
   }
@@ -355,11 +397,11 @@ class ShopifyService {
     try {
       const store = await Store.findById(storeId);
       if (!store) {
-        throw new Error('Store not found');
+        throw new Error("Store not found");
       }
 
       const accessToken = decrypt(store.accessToken);
-      
+
       const graphqlQuery = `
         query getInventoryLevels($inventoryItemIds: [ID!]!) {
           inventoryItems(ids: $inventoryItemIds) {
@@ -382,11 +424,16 @@ class ShopifyService {
       `;
 
       const variables = { inventoryItemIds };
-      const response = await this.makeGraphQLRequest(store.shopifyDomain, accessToken, graphqlQuery, variables);
-      
+      const response = await this.makeGraphQLRequest(
+        store.shopifyDomain,
+        accessToken,
+        graphqlQuery,
+        variables
+      );
+
       return response.data.data.inventoryItems;
     } catch (error) {
-      logger.error('Error getting inventory levels:', error);
+      logger.error("Error getting inventory levels:", error);
       throw error;
     }
   }
@@ -398,11 +445,11 @@ class ShopifyService {
     try {
       const store = await Store.findById(storeId);
       if (!store) {
-        throw new Error('Store not found');
+        throw new Error("Store not found");
       }
 
       const accessToken = decrypt(store.accessToken);
-      
+
       const graphqlMutation = `
         mutation inventoryAdjustQuantity($input: InventoryAdjustQuantityInput!) {
           inventoryAdjustQuantity(input: $input) {
@@ -421,19 +468,93 @@ class ShopifyService {
       const variables = {
         input: {
           inventoryLevelId: `gid://shopify/InventoryLevel/${locationId}?inventory_item_id=${variantId}`,
-          availableDelta: quantity
-        }
+          availableDelta: quantity,
+        },
       };
 
-      const response = await this.makeGraphQLRequest(store.shopifyDomain, accessToken, graphqlMutation, variables);
-      
+      const response = await this.makeGraphQLRequest(
+        store.shopifyDomain,
+        accessToken,
+        graphqlMutation,
+        variables
+      );
+
       if (response.data.data.inventoryAdjustQuantity.userErrors.length > 0) {
-        throw new Error(response.data.data.inventoryAdjustQuantity.userErrors[0].message);
+        throw new Error(
+          response.data.data.inventoryAdjustQuantity.userErrors[0].message
+        );
       }
 
       return response.data.data.inventoryAdjustQuantity.inventoryLevel;
     } catch (error) {
-      logger.error('Error updating inventory:', error);
+      logger.error("Error updating inventory:", error);
+      throw error;
+    }
+  }
+
+  /**
+   * Set absolute inventory quantity for a given inventoryItem at the store's primary location
+   * Params: { storeId: string, inventoryItemId: string, quantity: number }
+   */
+  async setInventoryQuantity({ storeId, inventoryItemId, quantity }) {
+    try {
+      const store = await Store.findById(storeId);
+      if (!store) {
+        throw new Error("Store not found");
+      }
+
+      const accessToken = decrypt(store.accessToken);
+      const locationId = await this.getPrimaryLocationId(storeId);
+
+      const graphqlMutation = `
+        mutation inventorySetQuantities($input: InventorySetQuantitiesInput!) {
+          inventorySetQuantities(input: $input) {
+            inventoryAdjustmentGroup {
+              createdAt
+              reason
+              changes { name delta }
+            }
+            userErrors { field message }
+          }
+        }
+      `;
+
+      const variables = {
+        input: {
+          name: "available",
+          reason: "correction",
+          ignoreCompareQuantity: true,
+          quantities: [
+            {
+              inventoryItemId,
+              locationId,
+              quantity: Math.max(0, Number(quantity) || 0),
+            },
+          ],
+        },
+      };
+
+      const response = await this.makeGraphQLRequest(
+        store.shopifyDomain,
+        accessToken,
+        graphqlMutation,
+        variables
+      );
+
+      const errors =
+        response?.data?.data?.inventorySetQuantities?.userErrors || [];
+      if (errors.length > 0) {
+        throw new Error(
+          errors[0]?.message || "Failed to set inventory quantities"
+        );
+      }
+
+      return (
+        response?.data?.data?.inventorySetQuantities
+          ?.inventoryAdjustmentGroup || null
+      );
+    } catch (error) {
+      logger.error("Error setting inventory quantity:", error);
       throw error;
     }
   }
@@ -445,11 +566,11 @@ class ShopifyService {
     try {
       const store = await Store.findById(storeId);
       if (!store) {
-        throw new Error('Store not found');
+        throw new Error("Store not found");
       }
 
       const accessToken = decrypt(store.accessToken);
-      
+
       const graphqlMutation = `
         mutation productCreate($input: ProductInput!) {
           productCreate(input: $input) {
@@ -467,15 +588,20 @@ class ShopifyService {
       `;
 
       const variables = { input: productData };
-      const response = await this.makeGraphQLRequest(store.shopDomain, accessToken, graphqlMutation, variables);
-      
+      const response = await this.makeGraphQLRequest(
+        store.shopDomain,
+        accessToken,
+        graphqlMutation,
+        variables
+      );
+
       if (response.data.data.productCreate.userErrors.length > 0) {
         throw new Error(response.data.data.productCreate.userErrors[0].message);
       }
 
       return response.data.data.productCreate.product;
     } catch (error) {
-      logger.error('Error creating product:', error);
+      logger.error("Error creating product:", error);
       throw error;
     }
   }
@@ -489,34 +615,45 @@ class ShopifyService {
    * @param {Object} [data=null] - Request body data
    * @returns {Promise<Object>} - API response
    */
-  async makeRequest(shopDomain, accessToken, endpoint, method = 'GET', data = null) {
+  async makeRequest(
+    shopDomain,
+    accessToken,
+    endpoint,
+    method = "GET",
+    data = null
+  ) {
     // Normalize shop domain (remove protocol and path if present)
     let normalizedDomain = shopDomain
-      .replace(/^https?:\/\//, '') // Remove http:// or https://
-      .replace(/\/.*$/, '')         // Remove any path
+      .replace(/^https?:\/\//, "") // Remove http:// or https://
+      .replace(/\/.*$/, "") // Remove any path
       .toLowerCase();
 
     // If only a store "name" or subdomain was provided (no dot) and it's not already a myshopify domain,
     // assume it's the shop subdomain and append .myshopify.com
-    if (!normalizedDomain.includes('.') && !normalizedDomain.endsWith('myshopify.com')) {
+    if (
+      !normalizedDomain.includes(".") &&
+      !normalizedDomain.endsWith("myshopify.com")
+    ) {
       normalizedDomain = `${normalizedDomain}.myshopify.com`;
     }
 
-    const url = `https://${normalizedDomain}/admin/api/${this.apiVersion}/${endpoint.replace(/^\/+/, '')}`;
+    const url = `https://${normalizedDomain}/admin/api/${
+      this.apiVersion
+    }/${endpoint.replace(/^\/+/, "")}`;
 
     const config = {
       method,
       url,
       headers: {
-        'X-Shopify-Access-Token': accessToken,
-        'Content-Type': 'application/json',
-        'User-Agent': 'Noxa-Vendor-App/1.0 (Noxa App)'
+        "X-Shopify-Access-Token": accessToken,
+        "Content-Type": "application/json",
+        "User-Agent": "Noxa-Vendor-App/1.0 (Noxa App)",
       },
-      timeout: 10000 // 10 second timeout
+      timeout: 10000, // 10 second timeout
     };
 
     if (data) {
-      if (method.toUpperCase() === 'GET') {
+      if (method.toUpperCase() === "GET") {
         config.params = data;
       } else {
         config.data = data;
@@ -549,36 +686,39 @@ class ShopifyService {
   async makeGraphQLRequest(shopDomain, accessToken, query, variables = {}) {
     // Normalize shop domain (remove protocol and path if present)
     let normalizedDomain = shopDomain
-      .replace(/^https?:\/\//, '') // Remove http:// or https://
-      .replace(/\/.*$/, '')         // Remove any path
+      .replace(/^https?:\/\//, "") // Remove http:// or https://
+      .replace(/\/.*$/, "") // Remove any path
       .toLowerCase();
 
     // If only a store "name" or subdomain was provided (no dot) and it's not already a myshopify domain,
     // assume it's the shop subdomain and append .myshopify.com
-    if (!normalizedDomain.includes('.') && !normalizedDomain.endsWith('myshopify.com')) {
+    if (
+      !normalizedDomain.includes(".") &&
+      !normalizedDomain.endsWith("myshopify.com")
+    ) {
       normalizedDomain = `${normalizedDomain}.myshopify.com`;
     }
 
     const url = `https://${normalizedDomain}/admin/api/${this.apiVersion}/graphql.json`;
 
     const baseConfig = {
-      method: 'POST',
+      method: "POST",
       url,
       headers: {
-        'X-Shopify-Access-Token': accessToken,
-        'Content-Type': 'application/json',
-        'User-Agent': 'Noxa-Vendor-App/1.0 (Noxa App)',
-        'Accept': 'application/json'
+        "X-Shopify-Access-Token": accessToken,
+        "Content-Type": "application/json",
+        "User-Agent": "Noxa-Vendor-App/1.0 (Noxa App)",
+        Accept: "application/json",
       },
       data: {
         query,
-        variables: variables || {}
+        variables: variables || {},
       },
-      timeout: 20000 // 20 second timeout for GraphQL queries
+      timeout: 20000, // 20 second timeout for GraphQL queries
     };
 
     // basic retry with backoff for rate limiting / transient errors
-    const sleep = (ms) => new Promise(res => setTimeout(res, ms));
+    const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
     const maxRetries = 4;
     let attempt = 0;
     let lastErr;
@@ -588,10 +728,19 @@ class ShopifyService {
       } catch (err) {
         lastErr = err;
         const status = err?.response?.status;
-        const retryAfter = Number(err?.response?.headers?.['retry-after']) || null;
-        const shouldRetry = status === 429 || status === 430 || status === 500 || status === 502 || status === 503 || status === 504;
+        const retryAfter =
+          Number(err?.response?.headers?.["retry-after"]) || null;
+        const shouldRetry =
+          status === 429 ||
+          status === 430 ||
+          status === 500 ||
+          status === 502 ||
+          status === 503 ||
+          status === 504;
         if (!shouldRetry || attempt === maxRetries) break;
-        const backoff = retryAfter ? retryAfter * 1000 : Math.min(2000 * Math.pow(2, attempt), 15000);
+        const backoff = retryAfter
+          ? retryAfter * 1000
+          : Math.min(2000 * Math.pow(2, attempt), 15000);
         await sleep(backoff);
         attempt++;
       }
@@ -603,11 +752,11 @@ class ShopifyService {
    * Validate Shopify webhook
    */
   validateWebhook(data, hmacHeader) {
-    const crypto = require('crypto');
+    const crypto = require("crypto");
     const calculated = crypto
-      .createHmac('sha256', process.env.SHOPIFY_WEBHOOK_SECRET)
-      .update(data, 'utf8')
-      .digest('base64');
+      .createHmac("sha256", process.env.SHOPIFY_WEBHOOK_SECRET)
+      .update(data, "utf8")
+      .digest("base64");
 
     return calculated === hmacHeader;
   }
